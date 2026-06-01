@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>APERTURE PLATFORMER</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      background: #050d18;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      touch-action: none;
+    }
+    #game-wrap {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* ── Mobile virtual controls ────────────────────── */
+    #ctrl {
+      display: none;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 120px;
+      pointer-events: none;
+      z-index: 999;
+    }
+    .btn {
+      position: absolute;
+      background: rgba(255,255,255,0.12);
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 12px;
+      color: #fff;
+      font-family: 'Courier New', monospace;
+      font-size: 22px;
+      font-weight: bold;
+      user-select: none;
+      pointer-events: all;
+      touch-action: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #btn-left  { left: 10px;  bottom: 70px; width: 60px; height: 60px; }
+    #btn-right { left: 80px;  bottom: 70px; width: 60px; height: 60px; }
+    #btn-jump  { left: 150px; bottom: 70px; width: 70px; height: 60px; border-color: rgba(255,255,255,0.5); }
+    #btn-o     { right: 80px; bottom: 70px; width: 65px; height: 60px; border-color: rgba(255,102,0,0.8);  background: rgba(255,102,0,0.2);  color: #ff6600; }
+    #btn-b     { right: 10px; bottom: 70px; width: 65px; height: 60px; border-color: rgba(0,136,255,0.8); background: rgba(0,136,255,0.2);  color: #0088ff; }
+    #ctrl-hint {
+      position: absolute;
+      bottom: 10px; left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.3);
+      font-family: 'Courier New', monospace;
+      font-size: 10px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+<div id="game-wrap">
+  <div id="phaser-container"></div>
+</div>
+
+<!-- Mobile controls (shown only on touch devices) -->
+<div id="ctrl">
+  <div class="btn" id="btn-left">◀</div>
+  <div class="btn" id="btn-right">▶</div>
+  <div class="btn" id="btn-jump">▲</div>
+  <div class="btn" id="btn-o">O</div>
+  <div class="btn" id="btn-b">B</div>
+  <div id="ctrl-hint">← → Bewegen  ·  ▲ Springen  ·  O/B Portal schießen (dann Bildschirm antippen)</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+<script>
+'use strict';
+
+// ─── Mobile detection ─────────────────────────────────────────────────────────
+const IS_MOBILE = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+if (IS_MOBILE) document.getElementById('ctrl').style.display = 'block';
+
+// Mobile state object shared between DOM buttons and the game scene
+const MOBILE = { left: false, right: false, jump: false, portal: 'orange', shoot: null };
+
+function bindBtn(id, stateKey) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const down = () => MOBILE[stateKey] = true;
+  const up   = () => MOBILE[stateKey] = false;
+  el.addEventListener('touchstart', e => { e.preventDefault(); down(); }, { passive: false });
+  el.addEventListener('touchend',   e => { e.preventDefault(); up();   }, { passive: false });
+  el.addEventListener('touchcancel',e => { e.preventDefault(); up();   }, { passive: false });
+}
+bindBtn('btn-left',  'left');
+bindBtn('btn-right', 'right');
+bindBtn('btn-jump',  'jump');
+
+// Portal color buttons — toggle active color
+['btn-o','btn-b'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('touchstart', e => {
+    e.preventDefault();
+    MOBILE.portal = id === 'btn-o' ? 'orange' : 'blue';
+    document.getElementById('btn-o').style.opacity = MOBILE.portal === 'orange' ? '1' : '0.45';
+    document.getElementById('btn-b').style.opacity = MOBILE.portal === 'blue'   ? '1' : '0.45';
+  }, { passive: false });
+});
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const GW = 1200, GH = 600;
+const OL = 3;
+
+const C = {
+  BG:       0x060c14,
+  GRID:     0x0d1c2c,
+  PLAT:     0x2b3d50,
+  PLAT_HI:  0x3a5165,
+  PLAT_STR: 0xff6600,
+  FLOOR:    0x1b2b3b,
+  FLOOR_HI: 0x263849,
+  CEIL:     0x16232f,
+  WALL:     0x14202c,
+  WALL_PNL: 0x1c2f3f,
+  OUT:      0x000000,
+  PLAYER:   0xe4ecf4,
+  VISOR:    0x0088ff,
+  SUIT_O:   0xff6600,
+  PO:       0xff6600,
+  PB:       0x0088ff,
+  PO_DIM:   0x993300,
+  PB_DIM:   0x004499,
+  EXIT:     0x00ff88,
+  EXIT_DIM: 0x00994d,
+  DANGER:   0xff2244,
+  HUD_BG:   0x08121e,
+  WHITE:    0xffffff,
+};
+
+// ─── Seeded RNG ───────────────────────────────────────────────────────────────
+class RNG {
+  constructor(seed) { this.s = ((seed % 2147483646) + 2147483646) % 2147483646 + 1; }
+  next() { this.s = this.s * 16807 % 2147483647; return (this.s - 1) / 2147483646; }
+  f(a, b) { return a + this.next() * (b - a); }
+}
+
+// ─── Ray vs AABB ─────────────────────────────────────────────────────────────
+function rayAABB(ox, oy, dx, dy, x0, y0, x1, y1) {
+  let tIn = -1e9, tOut = 1e9, nx = 0, ny = 0;
+
+  if (Math.abs(dx) > 1e-9) {
+    const t1 = (x0-ox)/dx, t2 = (x1-ox)/dx;
+    if (t1<=t2){ if(t1>tIn){tIn=t1;nx=-1;ny=0;} if(t2<tOut)tOut=t2; }
+    else       { if(t2>tIn){tIn=t2;nx= 1;ny=0;} if(t1<tOut)tOut=t1; }
+  } else if (ox < x0 || ox > x1) return null;
+
+  if (Math.abs(dy) > 1e-9) {
+    const t1 = (y0-oy)/dy, t2 = (y1-oy)/dy;
+    if (t1<=t2){ if(t1>tIn){tIn=t1;nx=0;ny=-1;} if(t2<tOut)tOut=t2; }
+    else       { if(t2>tIn){tIn=t2;nx=0;ny= 1;} if(t1<tOut)tOut=t1; }
+  } else if (oy < y0 || oy > y1) return null;
+
+  if (tIn > tOut || tOut < 0) return null;
+  const t = tIn >= 0 ? tIn : tOut;
+  return { t, x: ox+dx*t, y: oy+dy*t, nx, ny };
+}
+
+// ─── Portal velocity transform ────────────────────────────────────────────────
+function portalVel(vx, vy, anx, any, bnx, bny) {
+  const d = Math.atan2(bny, bnx) - Math.atan2(-any, -anx);
+  const c = Math.cos(d), s = Math.sin(d);
+  return { x: vx*c - vy*s, y: vx*s + vy*c };
+}
+
+// ─── Level generator ──────────────────────────────────────────────────────────
+function makeLevel(num) {
+  const rng     = new RNG(num * 97531 + 13);
+  const FLOOR_Y = GH - 55;
+  const CEIL_Y  = 55;
+  const platforms = [];
+
+  platforms.push({ x: 0,       y: 0, w: 20, h: GH, type: 'wall', noPortal: true });
+  platforms.push({ x: GW - 20, y: 0, w: 20, h: GH, type: 'wall', noPortal: true });
+  platforms.push({ x: 20, y: 0, w: GW - 40, h: CEIL_Y, type: 'ceil' });
+
+  const gapW = rng.f(Math.min(110 + num*28, 380), Math.min(160 + num*44, 380));
+  const gapX = rng.f(210, GW - 210 - gapW);
+
+  platforms.push({ x: 20,          y: FLOOR_Y, w: gapX - 20,               h: 80, type: 'floor' });
+  platforms.push({ x: gapX + gapW, y: FLOOR_Y, w: GW - 20 - (gapX + gapW), h: 80, type: 'floor' });
+
+  platforms.push({ x: 40,       y: FLOOR_Y - 78, w: 150, h: 20, type: 'platform' });
+  platforms.push({ x: GW - 190, y: FLOOR_Y - 78, w: 150, h: 20, type: 'platform' });
+
+  for (let i = 0; i < 2 + num; i++) {
+    const x = rng.f(Math.max(40, gapX - 80), Math.min(GW - 140, gapX + gapW + 80));
+    const y = rng.f(CEIL_Y + 30, FLOOR_Y - 110);
+    const w = rng.f(80, 160);
+    platforms.push({ x, y, w, h: 20, type: 'platform' });
+  }
+
+  for (let i = 0; i < Math.max(0, num - 1); i++) {
+    platforms.push({
+      x: rng.f(60, GW - 80),
+      y: rng.f(CEIL_Y + 10, FLOOR_Y - 170),
+      w: 22, h: rng.f(90, 200), type: 'column',
+    });
+  }
+
+  return {
+    platforms,
+    playerStart: { x: 115,      y: FLOOR_Y - 130 },
+    exitPos:     { x: GW - 115, y: FLOOR_Y - 128 },
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MENU SCENE
+// ═══════════════════════════════════════════════════════════════════════════════
+class MenuScene extends Phaser.Scene {
+  constructor() { super('Menu'); }
+
+  create() {
+    const g = this.add.graphics();
+    g.fillStyle(C.BG); g.fillRect(0, 0, GW, GH);
+    g.lineStyle(1, C.GRID);
+    for (let x = 0; x <= GW; x += 80) g.lineBetween(x, 0, x, GH);
+    for (let y = 0; y <= GH; y += 80) g.lineBetween(0, y, GW, y);
+    g.lineStyle(3, C.PO); g.strokeRect(14, 14, GW - 28, GH - 28);
+    g.lineStyle(1, C.PB, 0.5); g.strokeRect(20, 20, GW - 40, GH - 40);
+    g.fillStyle(C.PO, 0.07); g.fillRect(0, 0, 60, GH);
+    g.fillStyle(C.PB, 0.07); g.fillRect(GW - 60, 0, 60, GH);
+
+    this._logo(GW / 2, GH * 0.27, 56);
+
+    this.add.text(GW/2, GH*0.47, 'APERTURE', {
+      fontFamily: 'Courier New,monospace', fontSize: '74px',
+      color: '#ff6600', stroke: '#000', strokeThickness: 7,
+    }).setOrigin(0.5);
+    this.add.text(GW/2, GH*0.615, 'PLATFORMER', {
+      fontFamily: 'Courier New,monospace', fontSize: '44px',
+      color: '#0088ff', stroke: '#000', strokeThickness: 5,
+    }).setOrigin(0.5);
+    this.add.text(GW/2, GH*0.71, 'CELL-SHADED PORTAL PUZZLE', {
+      fontFamily: 'Courier New,monospace', fontSize: '15px', color: '#7899bb',
+    }).setOrigin(0.5);
+
+    const hint = IS_MOBILE
+      ? 'TIPPEN UM ZU STARTEN'
+      : 'WASD / ↑↓←→  Move   SPACE  Jump   LMB  Orange Portal   RMB  Blue Portal';
+    this.add.text(GW/2, GH*0.79, hint, {
+      fontFamily: 'Courier New,monospace', fontSize: '12px', color: '#446680',
+    }).setOrigin(0.5);
+
+    const prompt = this.add.text(GW/2, GH*0.87, '[ TIPPEN ODER SPACE → TESTEN BEGINNEN ]', {
+      fontFamily: 'Courier New,monospace', fontSize: '20px',
+      color: '#ffffff', stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5);
+    this.tweens.add({ targets: prompt, alpha: 0.15, duration: 720, yoyo: true, repeat: -1 });
+
+    this.input.once('pointerdown', () => this.scene.start('Game', { level: 1 }));
+    this.input.keyboard.once('keydown-SPACE', () => this.scene.start('Game', { level: 1 }));
+  }
+
+  _logo(cx, cy, r) {
+    const g = this.add.graphics();
+    g.lineStyle(3, C.PO); g.strokeCircle(cx, cy, r);
+    g.fillStyle(C.PO, 0.12); g.fillCircle(cx, cy, r);
+    for (let i = 0; i < 8; i++) {
+      const a = (i/8)*Math.PI*2;
+      g.lineBetween(cx+Math.cos(a)*r*0.38, cy+Math.sin(a)*r*0.38, cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+    }
+    g.fillStyle(C.BG); g.fillCircle(cx, cy, r*0.32);
+    g.lineStyle(3, C.PO); g.strokeCircle(cx, cy, r*0.32);
+    this.tweens.add({ targets: g, angle: 360, duration: 14000, repeat: -1, ease: 'Linear' });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GAME SCENE
+// ═══════════════════════════════════════════════════════════════════════════════
+class GameScene extends Phaser.Scene {
+  constructor() { super('Game'); }
+
+  init(data) {
+    this.levelNum      = data.level  || 1;
+    this.deaths        = data.deaths || 0;
+    this.portals       = { orange: null, blue: null };
+    this.tpCooldown    = false;
+    this.levelDone     = false;
+    this._jumpConsumed = false;
+  }
+
+  preload() {
+    if (!this.textures.exists('px')) {
+      const g = this.make.graphics({ add: false });
+      g.fillStyle(0xffffff); g.fillRect(0,0,1,1);
+      g.generateTexture('px',1,1); g.destroy();
+    }
+    if (!this.textures.exists('player')) this._makePlayerTex();
+  }
+
+  _makePlayerTex() {
+    const g = this.make.graphics({ add: false });
+    g.fillStyle(C.PLAYER); g.lineStyle(OL, C.OUT);
+    g.fillRect(6,38,8,14);  g.strokeRect(6,38,8,14);
+    g.fillRect(18,38,8,14); g.strokeRect(18,38,8,14);
+    g.fillRect(7,16,18,24); g.strokeRect(7,16,18,24);
+    g.fillStyle(C.SUIT_O);  g.fillRect(8,21,16,4);
+    g.lineStyle(1,C.OUT);   g.strokeRect(8,21,16,4);
+    g.fillStyle(C.PLAYER);  g.lineStyle(OL,C.OUT);
+    g.fillRect(8,3,16,13);  g.strokeRect(8,3,16,13);
+    g.fillStyle(C.VISOR);   g.fillRect(9,6,14,7);
+    g.lineStyle(2,C.OUT);   g.strokeRect(9,6,14,7);
+    g.fillStyle(0xffffff,0.35); g.fillRect(9,6,4,4);
+    g.fillStyle(C.PO); g.fillRect(24,22,10,7);
+    g.lineStyle(2,C.OUT); g.strokeRect(24,22,10,7);
+    g.fillStyle(C.PB); g.fillRect(26,24,6,3);
+    g.generateTexture('player',34,54); g.destroy();
+  }
+
+  create() {
+    const lvl = makeLevel(this.levelNum);
+    this.lvl = lvl;
+
+    this._drawBG();
+    this.platGroup = this.physics.add.staticGroup();
+
+    const gfx = this.add.graphics().setDepth(5);
+    lvl.platforms.forEach(p => { this._drawPlat(gfx, p); this._addBody(p); });
+
+    this._buildExit(lvl.exitPos);
+
+    this.player = this.physics.add.sprite(lvl.playerStart.x, lvl.playerStart.y, 'player');
+    this.player.body.setSize(20,50).setOffset(7,2);
+    this.player.setDepth(20).setCollideWorldBounds(false);
+
+    this.physics.add.collider(this.player, this.platGroup);
+
+    this.pGfx  = this.add.graphics().setDepth(16);
+    this.xhGfx = this.add.graphics().setDepth(40);
+    this.hudGfx = this.add.graphics().setDepth(51);
+
+    this._buildHUD();
+    this._setupInput();
+  }
+
+  _drawBG() {
+    const g = this.add.graphics().setDepth(0);
+    g.fillStyle(C.BG); g.fillRect(0,0,GW,GH);
+    g.lineStyle(1,C.GRID);
+    for (let x=0;x<=GW;x+=80) g.lineBetween(x,0,x,GH);
+    for (let y=0;y<=GH;y+=80) g.lineBetween(0,y,GW,y);
+    g.lineStyle(2,0x0e1e2e);
+    for (let y=80;y<GH-60;y+=120) g.lineBetween(20,y,GW-20,y);
+    g.lineStyle(2,0x18304a,0.7); g.strokeRect(7,7,GW-14,GH-14);
+  }
+
+  _drawPlat(g, p) {
+    const {x,y,w,h,type} = p;
+    if (type==='floor') {
+      g.fillStyle(C.FLOOR); g.fillRect(x,y,w,h);
+      g.lineStyle(1,0x172535);
+      for (let tx=x;tx<x+w;tx+=40) g.lineBetween(tx,y,tx,y+h);
+      for (let ty=y;ty<y+h;ty+=40) g.lineBetween(x,ty,x+w,ty);
+      g.fillStyle(C.FLOOR_HI); g.fillRect(x,y,w,5);
+      this._stripes(g,x,         y,48,h,true);
+      this._stripes(g,x+w-48,    y,48,h,false);
+      g.lineStyle(OL,C.OUT); g.strokeRect(x,y,w,h);
+    } else if (type==='ceil') {
+      g.fillStyle(C.CEIL); g.fillRect(x,y,w,h);
+      g.lineStyle(1,0x0c1a28);
+      for (let tx=x;tx<x+w;tx+=80) g.lineBetween(tx,y,tx,y+h);
+      g.fillStyle(0xffffff,0.04); g.fillRect(x,y+h-5,w,5);
+      g.lineStyle(OL,C.OUT); g.strokeRect(x,y,w,h);
+    } else if (type==='wall') {
+      g.fillStyle(C.WALL); g.fillRect(x,y,w,h);
+      g.lineStyle(1,0x0a1824);
+      for (let ty=y;ty<y+h;ty+=60) g.lineBetween(x,ty,x+w,ty);
+      g.lineStyle(OL,C.OUT); g.strokeRect(x,y,w,h);
+    } else if (type==='column') {
+      g.fillStyle(C.WALL_PNL); g.fillRect(x,y,w,h);
+      g.fillStyle(C.PLAT_HI);  g.fillRect(x,y,w,5);
+      g.lineStyle(1,0x0a1824);
+      for (let ty=y;ty<y+h;ty+=44) g.lineBetween(x,ty,x+w,ty);
+      g.lineStyle(OL,C.OUT); g.strokeRect(x,y,w,h);
+    } else {
+      g.fillStyle(0x000000,0.35); g.fillRect(x+5,y+5,w,h);
+      g.fillStyle(C.PLAT);  g.fillRect(x,y,w,h);
+      g.fillStyle(C.PLAT_HI); g.fillRect(x,y,w,7);
+      const panels = Math.max(2,Math.floor(w/44));
+      g.lineStyle(1,0x1a2a3a);
+      for (let i=1;i<panels;i++) {
+        const px2 = x+Math.round((w/panels)*i);
+        g.lineBetween(px2,y+2,px2,y+h-2);
+      }
+      g.fillStyle(C.PLAT_STR,0.85); g.fillRect(x,y,w,3);
+      g.lineStyle(OL,C.OUT); g.strokeRect(x,y,w,h);
+    }
+  }
+
+  _stripes(g, sx, sy, sw, sh, l2r) {
+    const W = sw/4;
+    for (let i=0;i<4;i++) {
+      g.fillStyle(i%2===(l2r?0:1)?C.DANGER:0x111111,0.82);
+      g.fillRect(sx+i*W,sy,W,sh);
+    }
+  }
+
+  _addBody(p) {
+    const sp = this.platGroup.create(p.x+p.w/2, p.y+p.h/2, 'px');
+    sp.setVisible(false).setDisplaySize(p.w,p.h).refreshBody();
+  }
+
+  _buildExit(pos) {
+    const g = this.add.graphics().setDepth(6);
+    g.fillStyle(C.EXIT,0.1);  g.fillEllipse(pos.x,pos.y+10,72,18);
+    g.fillStyle(C.EXIT,0.25); g.fillRect(pos.x-22,pos.y-52,44,64);
+    g.fillStyle(C.EXIT,0.75); g.fillRect(pos.x-18,pos.y-48,36,56);
+    g.fillStyle(0xffffff,0.28); g.fillRect(pos.x-18,pos.y-48,11,56);
+    g.lineStyle(OL+1,C.EXIT_DIM); g.strokeRect(pos.x-22,pos.y-52,44,64);
+    g.lineStyle(2,C.EXIT); g.strokeRect(pos.x-24,pos.y-54,48,68);
+    g.fillStyle(C.BG,0.85);
+    g.fillTriangle(pos.x-11,pos.y-8,pos.x-11,pos.y-32,pos.x+11,pos.y-20);
+    this.add.text(pos.x,pos.y+22,'EXIT',{
+      fontFamily:'Courier New',fontSize:'11px',color:'#00ff88',stroke:'#000',strokeThickness:2,
+    }).setOrigin(0.5).setDepth(7);
+    this.tweens.add({targets:g,alpha:{from:0.85,to:1},duration:650,yoyo:true,repeat:-1});
+  }
+
+  _buildHUD() {
+    const g = this.add.graphics().setDepth(50);
+    g.fillStyle(C.HUD_BG,0.92); g.fillRect(0,GH-46,GW,46);
+    g.lineStyle(2,C.PO,0.75); g.lineBetween(0,GH-46,GW,GH-46);
+
+    this.chamberTxt = this.add.text(GW/2,GH-23,`CHAMBER  ${String(this.levelNum).padStart(2,'0')}`,{
+      fontFamily:'Courier New',fontSize:'18px',color:'#ff6600',stroke:'#000',strokeThickness:2,
+    }).setOrigin(0.5).setDepth(52);
+
+    this.deathTxt = this.add.text(10,GH-38,`DEATHS: ${this.deaths}`,{
+      fontFamily:'Courier New',fontSize:'11px',color:'#7899bb',
+    }).setOrigin(0,0).setDepth(52);
+
+    if (!IS_MOBILE) {
+      this.add.text(GW-8,GH-38,
+        'WASD/Arrows: Move  ·  Space: Jump  ·  LMB: Orange  ·  RMB: Blue  ·  R: Reset',{
+        fontFamily:'Courier New',fontSize:'9px',color:'#3a5570',
+      }).setOrigin(1,0).setDepth(52);
+    }
+
+    this.add.text(8,GH-14,'PORTALS:',{
+      fontFamily:'Courier New',fontSize:'10px',color:'#446680',
+    }).setOrigin(0,1).setDepth(52);
+
+    // Portal indicators (O / B labels redrawn in _updateHUD)
+    this._plblO = this.add.text(89, GH-23,'O',{
+      fontFamily:'Courier New',fontSize:'12px',color:'#000',fontStyle:'bold',
+    }).setOrigin(0.5).setDepth(53);
+    this._plblB = this.add.text(125,GH-23,'B',{
+      fontFamily:'Courier New',fontSize:'12px',color:'#000',fontStyle:'bold',
+    }).setOrigin(0.5).setDepth(53);
+  }
+
+  _updateHUD() {
+    this.hudGfx.clear();
+    const oA = !!this.portals.orange, bA = !!this.portals.blue;
+    this.hudGfx.fillStyle(oA?C.PO:0x222222);
+    this.hudGfx.fillEllipse(89,GH-23,28,38);
+    this.hudGfx.lineStyle(2,oA?C.PO:0x333333);
+    this.hudGfx.strokeEllipse(89,GH-23,30,40);
+    this.hudGfx.fillStyle(bA?C.PB:0x222222);
+    this.hudGfx.fillEllipse(125,GH-23,28,38);
+    this.hudGfx.lineStyle(2,bA?C.PB:0x333333);
+    this.hudGfx.strokeEllipse(125,GH-23,30,40);
+    this.deathTxt.setText(`DEATHS: ${this.deaths}`);
+  }
+
+  _setupInput() {
+    this.keys = this.input.keyboard.addKeys({
+      left:  Phaser.Input.Keyboard.KeyCodes.LEFT,
+      right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      up:    Phaser.Input.Keyboard.KeyCodes.UP,
+      a:     Phaser.Input.Keyboard.KeyCodes.A,
+      d:     Phaser.Input.Keyboard.KeyCodes.D,
+      w:     Phaser.Input.Keyboard.KeyCodes.W,
+      space: Phaser.Input.Keyboard.KeyCodes.SPACE,
+    });
+
+    // Safe: only disable context menu on desktop (mouse exists)
+    try { if (this.input.mouse) this.input.mouse.disableContextMenu(); } catch(_) {}
+
+    // Pointer → shoot portal
+    this.input.on('pointerdown', ptr => {
+      if (IS_MOBILE) {
+        // On mobile: tap game area shoots selected portal color
+        // (control buttons are HTML elements, won't trigger this)
+        this._shootPortal(MOBILE.portal, ptr.x, ptr.y);
+      } else {
+        if (ptr.leftButtonDown())  this._shootPortal('orange', ptr.x, ptr.y);
+        if (ptr.rightButtonDown()) this._shootPortal('blue',   ptr.x, ptr.y);
+      }
+    });
+
+    this.input.keyboard.on('keydown-R', () => {
+      this.scene.restart({ level: this.levelNum, deaths: this.deaths });
+    });
+  }
+
+  _shootPortal(color, sx, sy) {
+    const px = this.player.x, py = this.player.y;
+    const ddx = sx-px, ddy = sy-py;
+    const len = Math.hypot(ddx,ddy);
+    if (len<1) return;
+    const rdx = ddx/len, rdy = ddy/len;
+
+    let best = null;
+    for (const p of this.lvl.platforms) {
+      if (p.noPortal) continue;
+      const hit = rayAABB(px,py,rdx,rdy,p.x,p.y,p.x+p.w,p.y+p.h);
+      if (hit && (!best || hit.t < best.t)) best = { ...hit, plat: p };
+    }
+    if (!best) return;
+
+    const HALF = 24;
+    let hx = best.x, hy = best.y;
+    if (best.ny !== 0) {
+      hx = Math.max(best.plat.x+HALF, Math.min(best.plat.x+best.plat.w-HALF, hx));
+    } else {
+      hy = Math.max(best.plat.y+HALF, Math.min(best.plat.y+best.plat.h-HALF, hy));
+    }
+    this._placePortal(color, hx, hy, best.nx, best.ny);
+  }
+
+  _placePortal(color, x, y, nx, ny) {
+    if (this.portals[color]) this.portals[color].gfx.destroy();
+    const gfx = this.add.graphics().setDepth(17);
+    this._drawPortalGfx(gfx, x, y, nx, ny, color);
+    this.portals[color] = { x, y, nx, ny, gfx };
+    this.cameras.main.shake(70, 0.002);
+  }
+
+  _drawPortalGfx(g, x, y, nx, ny, color) {
+    const col    = color==='orange'?C.PO:C.PB;
+    const colDim = color==='orange'?C.PO_DIM:C.PB_DIM;
+    const horiz  = ny!==0;
+    const pw = horiz?48:16, ph = horiz?16:60;
+    for (let i=5;i>=1;i--) { g.fillStyle(col,0.025+i*0.025); g.fillEllipse(x,y,pw+i*14,ph+i*14); }
+    g.fillStyle(colDim,0.92); g.fillEllipse(x,y,pw-4,ph-4);
+    g.fillStyle(0x000000,0.4); g.fillEllipse(x,y,pw*0.55,ph*0.55);
+    g.lineStyle(4,col); g.strokeEllipse(x,y,pw,ph);
+    g.lineStyle(1,0xffffff,0.35); g.strokeEllipse(x,y,pw*0.7,ph*0.7);
+    const arx = x+nx*(horiz?14:18), ary = y+ny*(horiz?18:14);
+    g.lineStyle(2,col,0.8); g.lineBetween(x,y,arx,ary);
+    g.fillStyle(col); g.fillCircle(arx,ary,3);
+  }
+
+  update() {
+    if (this.levelDone) return;
+    this._move();
+    this._checkTeleport();
+    this._checkExit();
+    this._checkFall();
+    if (!IS_MOBILE) this._drawXhair();
+    else            this.xhGfx.clear();
+    this._updateHUD();
+  }
+
+  _move() {
+    const SPEED=235, JUMP=-540;
+    const k=this.keys, b=this.player.body;
+    const left  = k.left.isDown  || k.a.isDown    || MOBILE.left;
+    const right = k.right.isDown || k.d.isDown     || MOBILE.right;
+    const jump  = k.up.isDown    || k.w.isDown     || k.space.isDown || MOBILE.jump;
+
+    this.player.setVelocityX(left?-SPEED:right?SPEED:0);
+    if (left)  this.player.setFlipX(true);
+    if (right) this.player.setFlipX(false);
+
+    if (jump && b.blocked.down && !this._jumpConsumed) {
+      this.player.setVelocityY(JUMP);
+      this._jumpConsumed = true;
+    }
+    if (!jump) this._jumpConsumed = false;
+  }
+
+  _checkTeleport() {
+    const {orange,blue} = this.portals;
+    if (!orange||!blue||this.tpCooldown) return;
+    const px=this.player.x, py=this.player.y;
+    const vx=this.player.body.velocity.x, vy=this.player.body.velocity.y;
+
+    const tryTP = (src,dst) => {
+      const horiz = src.ny!==0;
+      const hDist = Math.abs(px-src.x), vDist = Math.abs(py-src.y);
+      if (horiz?(hDist>24||vDist>30):(hDist>28||vDist>30)) return;
+      if (vx*(-src.nx)+vy*(-src.ny) < 8) return;
+      const nv = portalVel(vx,vy,src.nx,src.ny,dst.nx,dst.ny);
+      this.player.setPosition(dst.x+dst.nx*36, dst.y+dst.ny*36);
+      this.player.setVelocity(nv.x,nv.y);
+      this.tpCooldown = true;
+      this.time.delayedCall(380, ()=>{ this.tpCooldown=false; });
+      this._tpFX();
+    };
+    tryTP(orange,blue); tryTP(blue,orange);
+  }
+
+  _tpFX() {
+    const f = this.add.graphics().setDepth(45);
+    f.fillStyle(0xffffff,0.22); f.fillRect(0,0,GW,GH);
+    this.tweens.add({targets:f,alpha:0,duration:200,onComplete:()=>f.destroy()});
+    this.cameras.main.shake(140,0.004);
+  }
+
+  _checkExit() {
+    const ep = this.lvl.exitPos;
+    if (Math.hypot(this.player.x-ep.x,this.player.y-ep.y)<40) this._win();
+  }
+
+  _checkFall() {
+    if (this.player.y > GH+80) {
+      this.deaths++;
+      this.scene.restart({level:this.levelNum,deaths:this.deaths});
+    }
+  }
+
+  _drawXhair() {
+    this.xhGfx.clear();
+    const {x,y} = this.input.activePointer;
+    const S=11,G=5;
+    this.xhGfx.lineStyle(2,C.WHITE,0.88);
+    this.xhGfx.lineBetween(x-S-G,y,x-G,y); this.xhGfx.lineBetween(x+G,y,x+S+G,y);
+    this.xhGfx.lineBetween(x,y-S-G,x,y-G); this.xhGfx.lineBetween(x,y+G,x,y+S+G);
+    this.xhGfx.strokeCircle(x,y,3.5);
+  }
+
+  _win() {
+    if (this.levelDone) return;
+    this.levelDone = true;
+    const ov = this.add.graphics().setDepth(60);
+    ov.fillStyle(0x000000,0.78); ov.fillRect(0,0,GW,GH);
+    ov.lineStyle(3,C.EXIT); ov.strokeRect(GW/2-240,GH/2-90,480,180);
+    this.add.text(GW/2,GH/2-40,'TEST PASSED',{
+      fontFamily:'Courier New',fontSize:'58px',color:'#00ff88',stroke:'#000',strokeThickness:7,
+    }).setOrigin(0.5).setDepth(61);
+    this.add.text(GW/2,GH/2+22,`CHAMBER ${String(this.levelNum).padStart(2,'0')} CLEARED`,{
+      fontFamily:'Courier New',fontSize:'22px',color:'#ff6600',stroke:'#000',strokeThickness:3,
+    }).setOrigin(0.5).setDepth(61);
+    this.time.delayedCall(2400,()=>{
+      this.scene.start('Game',{level:this.levelNum+1,deaths:0});
+    });
+  }
+}
+
+// ─── Bootstrap ───────────────────────────────────────────────────────────────
+new Phaser.Game({
+  type:            Phaser.CANVAS, // CANVAS is most compatible on iOS Safari
+  width:           GW,
+  height:          GH,
+  backgroundColor: '#060c14',
+  parent:          'phaser-container',
+  physics: {
+    default: 'arcade',
+    arcade:  { gravity: { y: 860 }, debug: false },
+  },
+  scale: {
+    mode:       Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+    width:      GW,
+    height:     GH,
+  },
+  scene: [MenuScene, GameScene],
+  input: {
+    activePointers: 4, // support multi-touch
+  },
+});
+</script>
+</body>
+</html>
