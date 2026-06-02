@@ -110,12 +110,20 @@ bindBtn('btn-right',  'right');
 bindBtn('btn-jump',   'jump');
 bindBtn('btn-freeze', 'freeze');
 
+// ─── SPIELER-KONFIG (hier anpassen) ──────────────────────────────────────────
+const CFG = {
+  SPEED:   236,    // Laufgeschwindigkeit
+  JUMP:   -562,    // Sprunghöhe (negativer = höher)
+  DJUMP:   0.8,    // Double Jump als Anteil des normalen Sprungs (0.5 = 50%)
+  GRAVITY: 1342,   // Schwerkraft
+};
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 const GW = 1200, GH = 600;
 const OL = 3;
 
 const C = {
-  BG:       0x060c14,
+  BG:       0x494a48,
   GRID:     0x0d1c2c,
   PLAT:     0x2b3d50,
   PLAT_HI:  0x3a5165,
@@ -140,6 +148,7 @@ const C = {
   HUD_BG:   0x08121e,
   WHITE:    0xffffff,
   GUN_COL:  0xffcc00,
+  ATMO:     0x9da19c,
 };
 
 // ─── Seeded RNG ───────────────────────────────────────────────────────────────
@@ -290,8 +299,9 @@ class GameScene extends Phaser.Scene {
     this.levelNum      = data.level  || 1;
     this.deaths        = data.deaths || 0;
     this.hasGun        = data.hasGun || false;
-    this.levelDone     = false;
-    this._jumpConsumed = false;
+    this.levelDone      = false;
+    this._jumpConsumed  = false;
+    this._airJumpsLeft  = 0;
     this.platObjects   = [];   // { def, state, origCX, origCY, staticSprite, dynamicBody, visualGfx, liquidTween }
     this.liquidGroup   = null;
     this._freezeCooldown = false;
@@ -333,8 +343,9 @@ class GameScene extends Phaser.Scene {
 
     this._drawBG();
 
-    this.platGroup  = this.physics.add.staticGroup();
-    this.liquidGroup = this.physics.add.group();
+    this.platGroup       = this.physics.add.staticGroup();
+    this.liquidGroup     = this.physics.add.group(); // alle liquid (kein player-collider)
+    this.colLiquidGroup  = this.physics.add.group(); // nur columns (player kann draufstehen)
 
     const platGfxLayer = this.add.graphics().setDepth(5);
 
@@ -348,6 +359,8 @@ class GameScene extends Phaser.Scene {
         def: { ...p },
         state: 'solid',
         origCX: cx, origCY: cy,
+        colOrigW: p.w,   // original column dims preserved across re-liquefies
+        colOrigH: p.h,
         staticSprite: sp,
         dynamicBody: null,
         visualGfx: gfx,
@@ -370,6 +383,8 @@ class GameScene extends Phaser.Scene {
     this.player.setDepth(20).setCollideWorldBounds(false);
 
     this.physics.add.collider(this.player, this.platGroup);
+    // Only columns get player-collider so player can ride them (elevator)
+    this.physics.add.collider(this.player, this.colLiquidGroup);
 
     this.beamGfx = this.add.graphics().setDepth(30);
     this.xhGfx   = this.add.graphics().setDepth(40);
@@ -388,12 +403,24 @@ class GameScene extends Phaser.Scene {
   _drawBG() {
     const g = this.add.graphics().setDepth(0);
     g.fillStyle(C.BG); g.fillRect(0,0,GW,GH);
-    g.lineStyle(1,C.GRID);
+
+    // Atmospheric ATMO (#9da19c) wash — subtle vertical gradient panels
+    g.fillStyle(C.ATMO, 0.03); g.fillRect(0, 0, GW, GH);
+    g.fillStyle(C.ATMO, 0.05); g.fillRect(GW*0.25, 0, GW*0.5, GH);
+    g.fillStyle(C.ATMO, 0.03); g.fillRect(GW*0.35, 0, GW*0.3, GH);
+
+    // Fine grid in ATMO tint
+    g.lineStyle(1, C.ATMO, 0.07);
     for (let x=0;x<=GW;x+=80) g.lineBetween(x,0,x,GH);
     for (let y=0;y<=GH;y+=80) g.lineBetween(0,y,GW,y);
-    g.lineStyle(2,0x0e1e2e);
+
+    // Horizontal accent lines
+    g.lineStyle(1, C.ATMO, 0.12);
     for (let y=80;y<GH-60;y+=120) g.lineBetween(20,y,GW-20,y);
-    g.lineStyle(2,0x18304a,0.7); g.strokeRect(7,7,GW-14,GH-14);
+
+    // Outer frame — ATMO tinted border
+    g.lineStyle(2, C.ATMO, 0.18); g.strokeRect(7,7,GW-14,GH-14);
+    g.lineStyle(1, C.ATMO, 0.08); g.strokeRect(14,14,GW-28,GH-28);
   }
 
   // ── Platform drawing ─────────────────────────────────────────────────────────
@@ -550,7 +577,7 @@ class GameScene extends Phaser.Scene {
 
     if (!IS_MOBILE) {
       this.add.text(GW-8,GH-38,
-        'WASD/Arrows: Move  ·  Space: Jump  ·  LMB: Verflüssigen  ·  RMB: Einfrieren  ·  R: Reset',{
+        'WASD/Arrows: Move  ·  Space: Jump  ·  LMB: Verflüssigen / Gezielt einfrieren  ·  RMB: Alle einfrieren  ·  R: Reset',{
         fontFamily:'Courier New',fontSize:'9px',color:'#3a5570',
       }).setOrigin(1,0).setDepth(52);
     }
@@ -626,6 +653,8 @@ class GameScene extends Phaser.Scene {
   }
 
   // ── State Gun: shoot ─────────────────────────────────────────────────────────
+  // LMB/tap: if ray hits a LIQUID platform first → freeze just that one (Feature 3)
+  //          if ray hits a SOLID platform → liquefy it (or re-liquefy if frozen, Feature 5)
   _shootStateGun(sx, sy) {
     if (!this.hasGun || this.levelDone) return;
 
@@ -635,64 +664,191 @@ class GameScene extends Phaser.Scene {
     if (len < 1) return;
     const rdx = ddx/len, rdy = ddy/len;
 
-    let bestT = Infinity, bestIdx = -1, bestHit = null;
+    // Ray vs liquid platforms (current dynamic-body position + morphed size)
+    let bestLiqT = Infinity, bestLiqIdx = -1;
+    this.platObjects.forEach((po, idx) => {
+      if (po.state !== 'liquid' || !po.dynamicBody) return;
+      const cx = po.dynamicBody.x, cy = po.dynamicBody.y;
+      const hw = po.currentW/2, hh = po.currentH/2;
+      const hit = rayAABB(px, py, rdx, rdy, cx-hw, cy-hh, cx+hw, cy+hh);
+      if (hit && hit.t < bestLiqT) { bestLiqT = hit.t; bestLiqIdx = idx; }
+    });
 
+    // Ray vs solid platforms (incl. frozen ones — Feature 5: re-liquefy)
+    let bestSolT = Infinity, bestSolIdx = -1, bestSolHit = null;
     this.platObjects.forEach((po, idx) => {
       if (po.def.noState || po.state === 'liquid' || po.state === 'gone') return;
       const d = po.def;
       const hit = rayAABB(px, py, rdx, rdy, d.x, d.y, d.x+d.w, d.y+d.h);
-      if (hit && hit.t < bestT) { bestT = hit.t; bestIdx = idx; bestHit = hit; }
+      if (hit && hit.t < bestSolT) { bestSolT = hit.t; bestSolIdx = idx; bestSolHit = hit; }
     });
 
-    if (bestIdx < 0) {
-      // Beam goes to void — draw fading shot
-      this._drawBeam(px, py, px + rdx*1200, py + rdy*1200, false);
+    // Liquid closer → targeted freeze
+    if (bestLiqIdx >= 0 && bestLiqT < bestSolT) {
+      const po = this.platObjects[bestLiqIdx];
+      this._drawBeam(px, py, po.dynamicBody.x, po.dynamicBody.y, true);
+      this._freezePlatform(po);
       return;
     }
 
-    this._drawBeam(px, py, bestHit.x, bestHit.y, true);
-    this._liquefyPlatform(bestIdx);
+    // Solid → liquefy (or re-liquefy frozen platform)
+    if (bestSolIdx >= 0) {
+      this._drawBeam(px, py, bestSolHit.x, bestSolHit.y, true);
+      this._liquefyPlatform(bestSolIdx);
+      return;
+    }
+
+    this._drawBeam(px, py, px + rdx*1200, py + rdy*1200, false);
   }
 
   // ── State Gun: liquefy ───────────────────────────────────────────────────────
+  // Feature 6: type-based gravity + lateral drift + viscosity params
   _liquefyPlatform(idx) {
     const po = this.platObjects[idx];
     if (po.state !== 'solid') return;
 
     po.state = 'liquid';
-
-    // Remove static physics body
     po.staticSprite.destroy();
     po.staticSprite = null;
 
-    // Create falling dynamic body
+    // Reset gfx transform (frozen platforms leave an offset)
+    po.visualGfx.x = 0;
+    po.visualGfx.y = 0;
+    po.visualGfx.setAlpha(1);
+
     const cx = po.origCX, cy = po.origCY;
+    const type = po.def.type;
+    const isCol  = type === 'column';
+    const isWide = po.def.w > 130;
+
+    // Gravity: columns fall slowly so player can ride; wide slabs slow; normal medium
+    const extraGrav = isCol ? -200 : isWide ? 70 : 200;
+
+    // Lateral drift direction (columns tip in this direction)
+    const driftDir = Math.random() < 0.5 ? 1 : -1;
+    const drift = isCol
+      ? driftDir * (30 + Math.random() * 20)
+      : (Math.random() - 0.5) * 25;
+
+    // Viscosity params — use colOrigW/H for columns to avoid swapped dims after re-freeze
+    const baseW = isCol ? po.colOrigW : po.def.w;
+    const baseH = isCol ? po.colOrigH : po.def.h;
+    po.currentW = baseW;
+    po.currentH = baseH;
+    if (isCol) {
+      // Columns tip — no spread, handled by rotation
+      po.maxW = baseW;
+      po.minH = baseH;
+      po.spreadRate = 0;
+      // Tipping animation: rotates toward horizontal over ~2.5s
+      po.tipAngle  = 0;
+      po.tipTarget = driftDir * 90;
+      po.tipSpeed  = 36; // degrees per second
+    } else if (isWide) {
+      po.maxW = po.def.w * 2.4;
+      po.minH = Math.max(6, po.def.h * 0.18);
+      po.spreadRate = 50;
+      po.tipAngle = null;
+    } else {
+      po.maxW = po.def.w * 2.0;
+      po.minH = Math.max(6, po.def.h * 0.22);
+      po.spreadRate = 38;
+      po.tipAngle = null;
+    }
+
     const img = this.physics.add.image(cx, cy, 'px');
     img.setVisible(false);
-    img.setDisplaySize(po.def.w, po.def.h);
-    img.body.setSize(po.def.w, po.def.h);
-    img.body.setGravityY(280);
-    img.body.setDrag(30, 0);
+    img.setDisplaySize(po.currentW, po.currentH);
+    img.body.setSize(po.currentW, po.currentH);
+    img.body.setGravityY(extraGrav);
+    img.body.setVelocityX(drift);
     img.body.setCollideWorldBounds(false);
     this.liquidGroup.add(img);
+    if (isCol) this.colLiquidGroup.add(img);
     po.dynamicBody = img;
 
-    // Redraw in liquid style
-    po.visualGfx.clear();
-    this._drawPlatLiquid(po.visualGfx, po.def);
-
-    // Only pulse alpha — no scaleX (would skew from canvas origin, not platform center)
+    if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
     po.liquidTween = this.tweens.add({
       targets: po.visualGfx,
-      alpha:  { from: 0.95, to: 0.6 },
-      duration: 200,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
+      alpha: { from: 0.95, to: 0.55 },
+      duration: 180, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
     });
 
     this.cameras.main.shake(80, 0.003);
-    this._showHint('EINFRIEREN: RMB / F / ❄', 2200);
+    this._showHint('Tippen: Gezielt einfrieren  ·  RMB / ❄: Alle einfrieren', 2500);
+  }
+
+  // ── State Gun: freeze single platform ───────────────────────────────────────
+  _freezePlatform(po) {
+    if (po.state !== 'liquid' || !po.dynamicBody) return;
+
+    const newCX = po.dynamicBody.x;
+    const newCY = po.dynamicBody.y;
+    const angle = po.tipAngle ?? 0;
+    const absAngle = Math.abs(angle);
+
+    // Column: decide final orientation from tip angle
+    // >65° → horizontal bridge, 25-65° → diagonal ramp, <25° → near-vertical
+    let frozenW = po.currentW;
+    let frozenH = po.currentH;
+    let frozenAngle = 0;
+
+    if (po.def.type === 'column' && po.tipAngle !== null) {
+      const origW = po.colOrigW, origH = po.colOrigH;
+      if (absAngle > 65) {
+        // Bridge: swap dimensions → wide horizontal platform
+        frozenW = origH;
+        frozenH = origW;
+        frozenAngle = 0;
+      } else if (absAngle > 25) {
+        // Ramp: keep the visual angle, body is rectangular approximation
+        frozenW = origH * 0.8;
+        frozenH = origW * 0.8;
+        frozenAngle = angle; // preserve tilt visually
+      }
+      // <25°: stays near-vertical, no dimension change
+    }
+
+    const newX = newCX - frozenW / 2;
+    const newY = newCY - frozenH / 2;
+
+    po.dynamicBody.destroy(); po.dynamicBody = null;
+    if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
+
+    // Reset gfx, apply frozen visual
+    po.visualGfx.setAlpha(1).setScale(1);
+    po.visualGfx.angle = frozenAngle;
+    po.def.x = newX; po.def.y = newY;
+    po.def.w = frozenW; po.def.h = frozenH;
+
+    if (frozenAngle !== 0) {
+      // Ramp: draw centered so rotation works
+      po.visualGfx.x = newCX; po.visualGfx.y = newCY;
+      po.visualGfx.clear();
+      const hw = frozenW/2, hh = frozenH/2;
+      for (let i=2;i>=1;i--) { po.visualGfx.fillStyle(C.SG_COLD,0.04+i*0.03); po.visualGfx.fillRect(-hw-i*2,-hh-i*2,frozenW+i*4,frozenH+i*4); }
+      po.visualGfx.fillStyle(0x1a4466,0.92); po.visualGfx.fillRect(-hw,-hh,frozenW,frozenH);
+      po.visualGfx.fillStyle(C.SG_COLD,0.22); po.visualGfx.fillRect(-hw,-hh,frozenW,frozenH);
+      po.visualGfx.lineStyle(1,C.SG_COLD,0.5); for(let tx=-hw+6;tx<hw;tx+=18) po.visualGfx.lineBetween(tx,-hh,tx-4,hh);
+      po.visualGfx.fillStyle(0xffffff,0.18); po.visualGfx.fillRect(-hw,-hh,frozenW,3);
+      po.visualGfx.lineStyle(OL,C.SG_COLD); po.visualGfx.strokeRect(-hw,-hh,frozenW,frozenH);
+    } else {
+      po.visualGfx.x = 0; po.visualGfx.y = 0;
+      po.visualGfx.clear();
+      this._drawPlatFrozen(po.visualGfx, po.def);
+    }
+
+    // New static body
+    const sp = this.platGroup.create(newCX, newCY, 'px');
+    sp.setVisible(false).setDisplaySize(frozenW, frozenH).refreshBody();
+    po.staticSprite = sp;
+    po.origCX = newCX; po.origCY = newCY;
+    po.state = 'solid';
+
+    // Ice glow flash
+    const ig = this.add.graphics().setDepth(25);
+    ig.fillStyle(C.SG_COLD, 0.6); ig.fillRect(newX, newY, frozenW, frozenH);
+    this.tweens.add({ targets: ig, alpha: 0, duration: 380, onComplete: () => ig.destroy() });
   }
 
   // ── State Gun: freeze all ────────────────────────────────────────────────────
@@ -702,57 +858,12 @@ class GameScene extends Phaser.Scene {
     if (liquids.length === 0) return;
 
     this._freezeCooldown = true;
-
-    // Ice-blue flash
     const f = this.add.graphics().setDepth(45);
     f.fillStyle(C.SG_COLD, 0.25); f.fillRect(0, 0, GW, GH);
     this.tweens.add({ targets: f, alpha: 0, duration: 350, onComplete: () => f.destroy() });
     this.cameras.main.shake(100, 0.004);
 
-    liquids.forEach(po => {
-      if (!po.dynamicBody) return;
-
-      // New position from physics body
-      const newCX = po.dynamicBody.x;
-      const newCY = po.dynamicBody.y;
-      const newX  = newCX - po.def.w / 2;
-      const newY  = newCY - po.def.h / 2;
-
-      // Destroy dynamic body
-      po.dynamicBody.destroy();
-      po.dynamicBody = null;
-
-      // Stop tween, reset scale/alpha
-      if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
-      po.visualGfx.setScale(1).setAlpha(1);
-
-      // Update def to new position
-      po.def.x = newX;
-      po.def.y = newY;
-
-      // Sync graphics offset to new position (original draw was at old pos)
-      po.visualGfx.x = newX - (po.origCX - po.def.w/2);  // delta from original
-      po.visualGfx.y = newY - (po.origCY - po.def.h/2);
-
-      // Redraw frozen visual at original coordinates (gfx is offset by .x/.y)
-      const drawDef = { ...po.def, x: po.origCX - po.def.w/2, y: po.origCY - po.def.h/2 };
-      po.visualGfx.clear();
-      this._drawPlatFrozen(po.visualGfx, drawDef);
-
-      // New static body
-      const sp = this.platGroup.create(newCX, newCY, 'px');
-      sp.setVisible(false).setDisplaySize(po.def.w, po.def.h).refreshBody();
-      po.staticSprite = sp;
-      po.origCX = newCX;
-      po.origCY = newCY;
-      po.state = 'solid';
-
-      // Brief ice glow flash on new position
-      const ig = this.add.graphics().setDepth(25);
-      ig.fillStyle(C.SG_COLD, 0.55); ig.fillRect(newX, newY, po.def.w, po.def.h);
-      this.tweens.add({ targets: ig, alpha: 0, duration: 400, onComplete: () => ig.destroy() });
-    });
-
+    liquids.forEach(po => this._freezePlatform(po));
     this.time.delayedCall(600, () => { this._freezeCooldown = false; });
   }
 
@@ -792,10 +903,10 @@ class GameScene extends Phaser.Scene {
   }
 
   // ── Update loop ──────────────────────────────────────────────────────────────
-  update() {
+  update(time, delta) {
     if (this.levelDone) return;
     this._move();
-    this._updateLiquidVisuals();
+    this._updateLiquidVisuals(delta);
     this._cleanupFallenPlatforms();
     this._checkGunPickup();
     this._checkExit();
@@ -807,7 +918,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _move() {
-    const SPEED=235, JUMP=-540;
+    const SPEED=CFG.SPEED, JUMP=CFG.JUMP, DJUMP=CFG.JUMP*CFG.DJUMP;
     const k=this.keys, b=this.player.body;
     const left  = k.left.isDown  || k.a.isDown  || MOBILE.left;
     const right = k.right.isDown || k.d.isDown   || MOBILE.right;
@@ -817,9 +928,17 @@ class GameScene extends Phaser.Scene {
     if (left)  this.player.setFlipX(true);
     if (right) this.player.setFlipX(false);
 
-    if (jump && b.blocked.down && !this._jumpConsumed) {
-      this.player.setVelocityY(JUMP);
-      this._jumpConsumed = true;
+    if (b.blocked.down) this._airJumpsLeft = 1;
+
+    if (jump && !this._jumpConsumed) {
+      if (b.blocked.down) {
+        this.player.setVelocityY(JUMP);
+        this._jumpConsumed = true;
+      } else if (this._airJumpsLeft > 0) {
+        this.player.setVelocityY(DJUMP);
+        this._airJumpsLeft--;
+        this._jumpConsumed = true;
+      }
     }
     if (!jump) this._jumpConsumed = false;
   }
@@ -830,12 +949,58 @@ class GameScene extends Phaser.Scene {
     this._prevMobileFreeze = MOBILE.freeze;
   }
 
-  _updateLiquidVisuals() {
+  // Feature 1: viscosity morphing + Column tipping
+  _updateLiquidVisuals(delta) {
+    const dt = delta / 1000;
     this.platObjects.forEach(po => {
       if (po.state !== 'liquid' || !po.dynamicBody) return;
-      // Shift the pre-drawn graphics to follow the falling body
-      po.visualGfx.x = po.dynamicBody.x - po.origCX;
-      po.visualGfx.y = po.dynamicBody.y - po.origCY;
+
+      const cx = po.dynamicBody.x, cy = po.dynamicBody.y;
+
+      if (po.def.type === 'column' && po.tipAngle !== null) {
+        // Animate tip angle toward tipTarget
+        const dir = po.tipTarget > 0 ? 1 : -1;
+        po.tipAngle += po.tipSpeed * dt * dir;
+        if (Math.abs(po.tipAngle) >= Math.abs(po.tipTarget))
+          po.tipAngle = po.tipTarget;
+
+        // Position gfx at body center, rotate around it
+        po.visualGfx.x = cx;
+        po.visualGfx.y = cy;
+        po.visualGfx.angle = po.tipAngle;
+
+        // Draw column centered at (0,0) so rotation is correct
+        po.visualGfx.clear();
+        const hw = po.def.w / 2, hh = po.def.h / 2;
+        // Glow layers
+        for (let i = 3; i >= 1; i--) {
+          po.visualGfx.fillStyle(C.LIQUID, 0.04 + i * 0.04);
+          po.visualGfx.fillRect(-hw - i*3, -hh - i*3, po.def.w + i*6, po.def.h + i*6);
+        }
+        po.visualGfx.fillStyle(C.LIQUID_D, 0.9);
+        po.visualGfx.fillRect(-hw, -hh, po.def.w, po.def.h);
+        po.visualGfx.fillStyle(C.SG_BEAM, 0.5);
+        po.visualGfx.fillRect(-hw, -hh, po.def.w, 4);
+        po.visualGfx.lineStyle(OL, C.OUT);
+        po.visualGfx.strokeRect(-hw, -hh, po.def.w, po.def.h);
+      } else {
+        // Non-column: spread/flatten viscosity
+        if (po.currentW < po.maxW)
+          po.currentW = Math.min(po.maxW, po.currentW + po.spreadRate * dt);
+        if (po.currentH > po.minH)
+          po.currentH = Math.max(po.minH, po.currentH - po.spreadRate * 0.38 * dt);
+
+        po.dynamicBody.body.setSize(po.currentW, po.currentH);
+        po.dynamicBody.setDisplaySize(po.currentW, po.currentH);
+
+        po.visualGfx.x = 0; po.visualGfx.y = 0;
+        po.visualGfx.angle = 0;
+        po.visualGfx.clear();
+        this._drawPlatLiquid(po.visualGfx, {
+          x: cx - po.currentW/2, y: cy - po.currentH/2,
+          w: po.currentW, h: po.currentH,
+        });
+      }
     });
   }
 
@@ -846,7 +1011,8 @@ class GameScene extends Phaser.Scene {
         // Fell off screen — remove cleanly
         po.dynamicBody.destroy(); po.dynamicBody = null;
         if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
-        po.visualGfx.setVisible(false);
+        po.visualGfx.setVisible(false).setAlpha(1);
+        po.visualGfx.x = 0; po.visualGfx.y = 0; po.visualGfx.angle = 0;
         po.state = 'gone';
       }
     });
@@ -924,7 +1090,7 @@ new Phaser.Game({
   parent:          'phaser-container',
   physics: {
     default: 'arcade',
-    arcade:  { gravity: { y: 860 }, debug: false },
+    arcade:  { gravity: { y: CFG.GRAVITY }, debug: false },
   },
   scale: {
     mode:       Phaser.Scale.FIT,
