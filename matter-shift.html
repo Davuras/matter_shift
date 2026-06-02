@@ -922,7 +922,7 @@ class GameScene extends Phaser.Scene {
         this.player.setVelocityY(JUMP);
         this._jumpConsumed = true;
       } else if (this._airJumpsLeft > 0) {
-        this.player.setVelocityY(this.player.body.velocity.y + DJUMP);
+        this.player.setVelocityY(DJUMP);
         this._airJumpsLeft--;
         this._jumpConsumed = true;
       }
