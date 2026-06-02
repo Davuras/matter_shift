@@ -359,6 +359,8 @@ class GameScene extends Phaser.Scene {
         def: { ...p },
         state: 'solid',
         origCX: cx, origCY: cy,
+        colOrigW: p.w,   // original column dims preserved across re-liquefies
+        colOrigH: p.h,
         staticSprite: sp,
         dynamicBody: null,
         visualGfx: gfx,
@@ -728,18 +730,20 @@ class GameScene extends Phaser.Scene {
       ? driftDir * (30 + Math.random() * 20)
       : (Math.random() - 0.5) * 25;
 
-    // Viscosity params
-    po.currentW = po.def.w;
-    po.currentH = po.def.h;
+    // Viscosity params — use colOrigW/H for columns to avoid swapped dims after re-freeze
+    const baseW = isCol ? po.colOrigW : po.def.w;
+    const baseH = isCol ? po.colOrigH : po.def.h;
+    po.currentW = baseW;
+    po.currentH = baseH;
     if (isCol) {
       // Columns tip — no spread, handled by rotation
-      po.maxW = po.def.w;
-      po.minH = po.def.h;
+      po.maxW = baseW;
+      po.minH = baseH;
       po.spreadRate = 0;
-      // Tipping animation: rotates toward horizontal over ~1.5s
+      // Tipping animation: rotates toward horizontal over ~2.5s
       po.tipAngle  = 0;
       po.tipTarget = driftDir * 90;
-      po.tipSpeed  = 62; // degrees per second
+      po.tipSpeed  = 36; // degrees per second
     } else if (isWide) {
       po.maxW = po.def.w * 2.4;
       po.minH = Math.max(6, po.def.h * 0.18);
@@ -790,15 +794,16 @@ class GameScene extends Phaser.Scene {
     let frozenAngle = 0;
 
     if (po.def.type === 'column' && po.tipAngle !== null) {
+      const origW = po.colOrigW, origH = po.colOrigH;
       if (absAngle > 65) {
         // Bridge: swap dimensions → wide horizontal platform
-        frozenW = po.def.h;
-        frozenH = po.def.w;
+        frozenW = origH;
+        frozenH = origW;
         frozenAngle = 0;
       } else if (absAngle > 25) {
         // Ramp: keep the visual angle, body is rectangular approximation
-        frozenW = po.def.h * 0.8;
-        frozenH = po.def.w * 0.8;
+        frozenW = origH * 0.8;
+        frozenH = origW * 0.8;
         frozenAngle = angle; // preserve tilt visually
       }
       // <25°: stays near-vertical, no dimension change
