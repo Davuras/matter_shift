@@ -140,6 +140,7 @@ const C = {
   HUD_BG:   0x08121e,
   WHITE:    0xffffff,
   GUN_COL:  0xffcc00,
+  ATMO:     0x9da19c,
 };
 
 // ─── Seeded RNG ───────────────────────────────────────────────────────────────
@@ -371,6 +372,8 @@ class GameScene extends Phaser.Scene {
     this.player.setDepth(20).setCollideWorldBounds(false);
 
     this.physics.add.collider(this.player, this.platGroup);
+    // Player can stand on liquid columns (elevator / bridge-building)
+    this.physics.add.collider(this.player, this.liquidGroup);
 
     this.beamGfx = this.add.graphics().setDepth(30);
     this.xhGfx   = this.add.graphics().setDepth(40);
@@ -389,12 +392,24 @@ class GameScene extends Phaser.Scene {
   _drawBG() {
     const g = this.add.graphics().setDepth(0);
     g.fillStyle(C.BG); g.fillRect(0,0,GW,GH);
-    g.lineStyle(1,C.GRID);
+
+    // Atmospheric ATMO (#9da19c) wash — subtle vertical gradient panels
+    g.fillStyle(C.ATMO, 0.03); g.fillRect(0, 0, GW, GH);
+    g.fillStyle(C.ATMO, 0.05); g.fillRect(GW*0.25, 0, GW*0.5, GH);
+    g.fillStyle(C.ATMO, 0.03); g.fillRect(GW*0.35, 0, GW*0.3, GH);
+
+    // Fine grid in ATMO tint
+    g.lineStyle(1, C.ATMO, 0.07);
     for (let x=0;x<=GW;x+=80) g.lineBetween(x,0,x,GH);
     for (let y=0;y<=GH;y+=80) g.lineBetween(0,y,GW,y);
-    g.lineStyle(2,0x0e1e2e);
+
+    // Horizontal accent lines
+    g.lineStyle(1, C.ATMO, 0.12);
     for (let y=80;y<GH-60;y+=120) g.lineBetween(20,y,GW-20,y);
-    g.lineStyle(2,0x18304a,0.7); g.strokeRect(7,7,GW-14,GH-14);
+
+    // Outer frame — ATMO tinted border
+    g.lineStyle(2, C.ATMO, 0.18); g.strokeRect(7,7,GW-14,GH-14);
+    g.lineStyle(1, C.ATMO, 0.08); g.strokeRect(14,14,GW-28,GH-28);
   }
 
   // ── Platform drawing ─────────────────────────────────────────────────────────
@@ -695,32 +710,37 @@ class GameScene extends Phaser.Scene {
     const isCol  = type === 'column';
     const isWide = po.def.w > 130;
 
-    // Gravity: columns fall fast, wide slabs fall slow
-    const extraGrav = isCol ? 480 : isWide ? 70 : 200;
+    // Gravity: columns fall slowly so player can ride; wide slabs slow; normal medium
+    const extraGrav = isCol ? -200 : isWide ? 70 : 200;
 
-    // Lateral drift: columns tumble sideways, normal/wide barely drift
+    // Lateral drift direction (columns tip in this direction)
+    const driftDir = Math.random() < 0.5 ? 1 : -1;
     const drift = isCol
-      ? (Math.random() < 0.5 ? -1 : 1) * (55 + Math.random() * 55)
+      ? driftDir * (30 + Math.random() * 20)
       : (Math.random() - 0.5) * 25;
 
-    // Feature 1 — viscosity: platforms spread wide and flatten as they fall
+    // Viscosity params
     po.currentW = po.def.w;
     po.currentH = po.def.h;
     if (isCol) {
-      // Columns droop but stay narrow
-      po.maxW = po.def.w * 1.15;
-      po.minH = po.def.h * 0.6;
-      po.spreadRate = 6;
+      // Columns tip — no spread, handled by rotation
+      po.maxW = po.def.w;
+      po.minH = po.def.h;
+      po.spreadRate = 0;
+      // Tipping animation: rotates toward horizontal over ~1.5s
+      po.tipAngle  = 0;
+      po.tipTarget = driftDir * 90;
+      po.tipSpeed  = 62; // degrees per second
     } else if (isWide) {
-      // Wide slabs spread a lot
       po.maxW = po.def.w * 2.4;
       po.minH = Math.max(6, po.def.h * 0.18);
       po.spreadRate = 50;
+      po.tipAngle = null;
     } else {
-      // Normal platforms spread moderately
       po.maxW = po.def.w * 2.0;
       po.minH = Math.max(6, po.def.h * 0.22);
       po.spreadRate = 38;
+      po.tipAngle = null;
     }
 
     const img = this.physics.add.image(cx, cy, 'px');
@@ -748,26 +768,62 @@ class GameScene extends Phaser.Scene {
   _freezePlatform(po) {
     if (po.state !== 'liquid' || !po.dynamicBody) return;
 
-    // Snapshot morphed size + current position
-    const frozenW = po.currentW;
-    const frozenH = po.currentH;
-    const newCX   = po.dynamicBody.x;
-    const newCY   = po.dynamicBody.y;
-    const newX    = newCX - frozenW / 2;
-    const newY    = newCY - frozenH / 2;
+    const newCX = po.dynamicBody.x;
+    const newCY = po.dynamicBody.y;
+    const angle = po.tipAngle ?? 0;
+    const absAngle = Math.abs(angle);
+
+    // Column: decide final orientation from tip angle
+    // >65° → horizontal bridge, 25-65° → diagonal ramp, <25° → near-vertical
+    let frozenW = po.currentW;
+    let frozenH = po.currentH;
+    let frozenAngle = 0;
+
+    if (po.def.type === 'column' && po.tipAngle !== null) {
+      if (absAngle > 65) {
+        // Bridge: swap dimensions → wide horizontal platform
+        frozenW = po.def.h;
+        frozenH = po.def.w;
+        frozenAngle = 0;
+      } else if (absAngle > 25) {
+        // Ramp: keep the visual angle, body is rectangular approximation
+        frozenW = po.def.h * 0.8;
+        frozenH = po.def.w * 0.8;
+        frozenAngle = angle; // preserve tilt visually
+      }
+      // <25°: stays near-vertical, no dimension change
+    }
+
+    const newX = newCX - frozenW / 2;
+    const newY = newCY - frozenH / 2;
 
     po.dynamicBody.destroy(); po.dynamicBody = null;
     if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
 
-    // Reset gfx transform, draw frozen at absolute position
+    // Reset gfx, apply frozen visual
     po.visualGfx.setAlpha(1).setScale(1);
-    po.visualGfx.x = 0; po.visualGfx.y = 0;
+    po.visualGfx.angle = frozenAngle;
     po.def.x = newX; po.def.y = newY;
     po.def.w = frozenW; po.def.h = frozenH;
-    po.visualGfx.clear();
-    this._drawPlatFrozen(po.visualGfx, po.def);
 
-    // New static body at frozen size
+    if (frozenAngle !== 0) {
+      // Ramp: draw centered so rotation works
+      po.visualGfx.x = newCX; po.visualGfx.y = newCY;
+      po.visualGfx.clear();
+      const hw = frozenW/2, hh = frozenH/2;
+      for (let i=2;i>=1;i--) { po.visualGfx.fillStyle(C.SG_COLD,0.04+i*0.03); po.visualGfx.fillRect(-hw-i*2,-hh-i*2,frozenW+i*4,frozenH+i*4); }
+      po.visualGfx.fillStyle(0x1a4466,0.92); po.visualGfx.fillRect(-hw,-hh,frozenW,frozenH);
+      po.visualGfx.fillStyle(C.SG_COLD,0.22); po.visualGfx.fillRect(-hw,-hh,frozenW,frozenH);
+      po.visualGfx.lineStyle(1,C.SG_COLD,0.5); for(let tx=-hw+6;tx<hw;tx+=18) po.visualGfx.lineBetween(tx,-hh,tx-4,hh);
+      po.visualGfx.fillStyle(0xffffff,0.18); po.visualGfx.fillRect(-hw,-hh,frozenW,3);
+      po.visualGfx.lineStyle(OL,C.SG_COLD); po.visualGfx.strokeRect(-hw,-hh,frozenW,frozenH);
+    } else {
+      po.visualGfx.x = 0; po.visualGfx.y = 0;
+      po.visualGfx.clear();
+      this._drawPlatFrozen(po.visualGfx, po.def);
+    }
+
+    // New static body
     const sp = this.platGroup.create(newCX, newCY, 'px');
     sp.setVisible(false).setDisplaySize(frozenW, frozenH).refreshBody();
     po.staticSprite = sp;
@@ -878,30 +934,58 @@ class GameScene extends Phaser.Scene {
     this._prevMobileFreeze = MOBILE.freeze;
   }
 
-  // Feature 1: viscosity morphing — platforms spread wide and flatten while falling
+  // Feature 1: viscosity morphing + Column tipping
   _updateLiquidVisuals(delta) {
     const dt = delta / 1000;
     this.platObjects.forEach(po => {
       if (po.state !== 'liquid' || !po.dynamicBody) return;
 
-      // Spread: widen, flatten
-      if (po.currentW < po.maxW)
-        po.currentW = Math.min(po.maxW, po.currentW + po.spreadRate * dt);
-      if (po.currentH > po.minH)
-        po.currentH = Math.max(po.minH, po.currentH - po.spreadRate * 0.38 * dt);
-
-      // Sync physics body to morphed size
-      po.dynamicBody.body.setSize(po.currentW, po.currentH);
-      po.dynamicBody.setDisplaySize(po.currentW, po.currentH);
-
-      // Redraw liquid visual at current absolute position with current size
       const cx = po.dynamicBody.x, cy = po.dynamicBody.y;
-      po.visualGfx.x = 0; po.visualGfx.y = 0;
-      po.visualGfx.clear();
-      this._drawPlatLiquid(po.visualGfx, {
-        x: cx - po.currentW/2, y: cy - po.currentH/2,
-        w: po.currentW, h: po.currentH,
-      });
+
+      if (po.def.type === 'column' && po.tipAngle !== null) {
+        // Animate tip angle toward tipTarget
+        const dir = po.tipTarget > 0 ? 1 : -1;
+        po.tipAngle += po.tipSpeed * dt * dir;
+        if (Math.abs(po.tipAngle) >= Math.abs(po.tipTarget))
+          po.tipAngle = po.tipTarget;
+
+        // Position gfx at body center, rotate around it
+        po.visualGfx.x = cx;
+        po.visualGfx.y = cy;
+        po.visualGfx.angle = po.tipAngle;
+
+        // Draw column centered at (0,0) so rotation is correct
+        po.visualGfx.clear();
+        const hw = po.def.w / 2, hh = po.def.h / 2;
+        // Glow layers
+        for (let i = 3; i >= 1; i--) {
+          po.visualGfx.fillStyle(C.LIQUID, 0.04 + i * 0.04);
+          po.visualGfx.fillRect(-hw - i*3, -hh - i*3, po.def.w + i*6, po.def.h + i*6);
+        }
+        po.visualGfx.fillStyle(C.LIQUID_D, 0.9);
+        po.visualGfx.fillRect(-hw, -hh, po.def.w, po.def.h);
+        po.visualGfx.fillStyle(C.SG_BEAM, 0.5);
+        po.visualGfx.fillRect(-hw, -hh, po.def.w, 4);
+        po.visualGfx.lineStyle(OL, C.OUT);
+        po.visualGfx.strokeRect(-hw, -hh, po.def.w, po.def.h);
+      } else {
+        // Non-column: spread/flatten viscosity
+        if (po.currentW < po.maxW)
+          po.currentW = Math.min(po.maxW, po.currentW + po.spreadRate * dt);
+        if (po.currentH > po.minH)
+          po.currentH = Math.max(po.minH, po.currentH - po.spreadRate * 0.38 * dt);
+
+        po.dynamicBody.body.setSize(po.currentW, po.currentH);
+        po.dynamicBody.setDisplaySize(po.currentW, po.currentH);
+
+        po.visualGfx.x = 0; po.visualGfx.y = 0;
+        po.visualGfx.angle = 0;
+        po.visualGfx.clear();
+        this._drawPlatLiquid(po.visualGfx, {
+          x: cx - po.currentW/2, y: cy - po.currentH/2,
+          w: po.currentW, h: po.currentH,
+        });
+      }
     });
   }
 
@@ -912,7 +996,8 @@ class GameScene extends Phaser.Scene {
         // Fell off screen — remove cleanly
         po.dynamicBody.destroy(); po.dynamicBody = null;
         if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
-        po.visualGfx.setVisible(false);
+        po.visualGfx.setVisible(false).setAlpha(1);
+        po.visualGfx.x = 0; po.visualGfx.y = 0; po.visualGfx.angle = 0;
         po.state = 'gone';
       }
     });
