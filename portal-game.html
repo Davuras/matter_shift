@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <title>APERTURE PLATFORMER</title>
+  <title>STATE GUN</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body {
@@ -54,11 +54,12 @@
       align-items: center;
       justify-content: center;
     }
-    #btn-left  { left: 10px;  bottom: 70px; width: 60px; height: 60px; }
-    #btn-right { left: 80px;  bottom: 70px; width: 60px; height: 60px; }
-    #btn-jump  { left: 150px; bottom: 70px; width: 70px; height: 60px; border-color: rgba(255,255,255,0.5); }
-    #btn-o     { right: 80px; bottom: 70px; width: 65px; height: 60px; border-color: rgba(255,102,0,0.8);  background: rgba(255,102,0,0.2);  color: #ff6600; }
-    #btn-b     { right: 10px; bottom: 70px; width: 65px; height: 60px; border-color: rgba(0,136,255,0.8); background: rgba(0,136,255,0.2);  color: #0088ff; }
+    #btn-left   { left: 10px;  bottom: 70px; width: 60px; height: 60px; }
+    #btn-right  { left: 80px;  bottom: 70px; width: 60px; height: 60px; }
+    #btn-jump   { left: 150px; bottom: 70px; width: 70px; height: 60px; border-color: rgba(255,255,255,0.5); }
+    #btn-freeze { right: 10px; bottom: 70px; width: 75px; height: 60px;
+                  border-color: rgba(0,180,255,0.9); background: rgba(0,120,255,0.22); color: #00c8ff;
+                  font-size: 28px; }
     #ctrl-hint {
       position: absolute;
       bottom: 10px; left: 50%;
@@ -76,14 +77,13 @@
   <div id="phaser-container"></div>
 </div>
 
-<!-- Mobile controls (shown only on touch devices) -->
+<!-- Mobile controls -->
 <div id="ctrl">
   <div class="btn" id="btn-left">◀</div>
   <div class="btn" id="btn-right">▶</div>
   <div class="btn" id="btn-jump">▲</div>
-  <div class="btn" id="btn-o">O</div>
-  <div class="btn" id="btn-b">B</div>
-  <div id="ctrl-hint">← → Bewegen  ·  ▲ Springen  ·  O/B Portal schießen (dann Bildschirm antippen)</div>
+  <div class="btn" id="btn-freeze">❄</div>
+  <div id="ctrl-hint">← → Bewegen  ·  ▲ Springen  ·  Tippen: State Gun  ·  ❄ Einfrieren</div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
@@ -94,8 +94,7 @@
 const IS_MOBILE = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 if (IS_MOBILE) document.getElementById('ctrl').style.display = 'block';
 
-// Mobile state object shared between DOM buttons and the game scene
-const MOBILE = { left: false, right: false, jump: false, portal: 'orange' };
+const MOBILE = { left: false, right: false, jump: false, freeze: false };
 
 function bindBtn(id, stateKey) {
   const el = document.getElementById(id);
@@ -106,21 +105,10 @@ function bindBtn(id, stateKey) {
   el.addEventListener('touchend',   e => { e.preventDefault(); up();   }, { passive: false });
   el.addEventListener('touchcancel',e => { e.preventDefault(); up();   }, { passive: false });
 }
-bindBtn('btn-left',  'left');
-bindBtn('btn-right', 'right');
-bindBtn('btn-jump',  'jump');
-
-// Portal color buttons — toggle active color
-['btn-o','btn-b'].forEach(id => {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener('touchstart', e => {
-    e.preventDefault();
-    MOBILE.portal = id === 'btn-o' ? 'orange' : 'blue';
-    document.getElementById('btn-o').style.opacity = MOBILE.portal === 'orange' ? '1' : '0.45';
-    document.getElementById('btn-b').style.opacity = MOBILE.portal === 'blue'   ? '1' : '0.45';
-  }, { passive: false });
-});
+bindBtn('btn-left',   'left');
+bindBtn('btn-right',  'right');
+bindBtn('btn-jump',   'jump');
+bindBtn('btn-freeze', 'freeze');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const GW = 1200, GH = 600;
@@ -141,15 +129,17 @@ const C = {
   PLAYER:   0xe4ecf4,
   VISOR:    0x0088ff,
   SUIT_O:   0xff6600,
-  PO:       0xff6600,
-  PB:       0x0088ff,
-  PO_DIM:   0x993300,
-  PB_DIM:   0x004499,
+  SG_BEAM:  0xff9900,
+  SG_COLD:  0x00c8ff,
+  LIQUID:   0xff6600,
+  LIQUID_D: 0xcc4400,
+  FROZEN:   0x44aadd,
   EXIT:     0x00ff88,
   EXIT_DIM: 0x00994d,
   DANGER:   0xff2244,
   HUD_BG:   0x08121e,
   WHITE:    0xffffff,
+  GUN_COL:  0xffcc00,
 };
 
 // ─── Seeded RNG ───────────────────────────────────────────────────────────────
@@ -162,29 +152,19 @@ class RNG {
 // ─── Ray vs AABB ─────────────────────────────────────────────────────────────
 function rayAABB(ox, oy, dx, dy, x0, y0, x1, y1) {
   let tIn = -1e9, tOut = 1e9, nx = 0, ny = 0, nxO = 0, nyO = 0;
-
   if (Math.abs(dx) > 1e-9) {
     const t1 = (x0-ox)/dx, t2 = (x1-ox)/dx;
     if (t1<=t2){ if(t1>tIn){tIn=t1;nx=-1;ny=0;} if(t2<tOut){tOut=t2;nxO= 1;nyO=0;} }
     else       { if(t2>tIn){tIn=t2;nx= 1;ny=0;} if(t1<tOut){tOut=t1;nxO=-1;nyO=0;} }
   } else if (ox < x0 || ox > x1) return null;
-
   if (Math.abs(dy) > 1e-9) {
     const t1 = (y0-oy)/dy, t2 = (y1-oy)/dy;
     if (t1<=t2){ if(t1>tIn){tIn=t1;nx=0;ny=-1;} if(t2<tOut){tOut=t2;nxO=0;nyO= 1;} }
     else       { if(t2>tIn){tIn=t2;nx=0;ny= 1;} if(t1<tOut){tOut=t1;nxO=0;nyO=-1;} }
   } else if (oy < y0 || oy > y1) return null;
-
   if (tIn > tOut || tOut < 0) return null;
   const t = tIn >= 0 ? tIn : tOut;
   return { t, x: ox+dx*t, y: oy+dy*t, nx: tIn >= 0 ? nx : nxO, ny: tIn >= 0 ? ny : nyO };
-}
-
-// ─── Portal velocity transform ────────────────────────────────────────────────
-function portalVel(vx, vy, anx, any, bnx, bny) {
-  const d = Math.atan2(bny, bnx) - Math.atan2(-any, -anx);
-  const c = Math.cos(d), s = Math.sin(d);
-  return { x: vx*c - vy*s, y: vx*s + vy*c };
 }
 
 // ─── Level generator ──────────────────────────────────────────────────────────
@@ -194,15 +174,15 @@ function makeLevel(num) {
   const CEIL_Y  = 55;
   const platforms = [];
 
-  platforms.push({ x: 0,       y: 0, w: 20, h: GH, type: 'wall', noPortal: true });
-  platforms.push({ x: GW - 20, y: 0, w: 20, h: GH, type: 'wall', noPortal: true });
-  platforms.push({ x: 20, y: 0, w: GW - 40, h: CEIL_Y, type: 'ceil' });
+  platforms.push({ x: 0,       y: 0, w: 20, h: GH, type: 'wall',  noState: true });
+  platforms.push({ x: GW - 20, y: 0, w: 20, h: GH, type: 'wall',  noState: true });
+  platforms.push({ x: 20, y: 0, w: GW - 40, h: CEIL_Y, type: 'ceil', noState: true });
 
   const gapW = rng.f(Math.min(110 + num*28, 380), Math.min(160 + num*44, 380));
   const gapX = rng.f(210, GW - 210 - gapW);
 
-  platforms.push({ x: 20,          y: FLOOR_Y, w: gapX - 20,               h: 80, type: 'floor' });
-  platforms.push({ x: gapX + gapW, y: FLOOR_Y, w: GW - 20 - (gapX + gapW), h: 80, type: 'floor' });
+  platforms.push({ x: 20,          y: FLOOR_Y, w: gapX - 20,                h: 80, type: 'floor', noState: true });
+  platforms.push({ x: gapX + gapW, y: FLOOR_Y, w: GW - 20 - (gapX + gapW), h: 80, type: 'floor', noState: true });
 
   platforms.push({ x: 40,       y: FLOOR_Y - 78, w: 150, h: 20, type: 'platform' });
   platforms.push({ x: GW - 190, y: FLOOR_Y - 78, w: 150, h: 20, type: 'platform' });
@@ -222,10 +202,15 @@ function makeLevel(num) {
     });
   }
 
+  // Gun pickup only in level 1
+  const gunPos = (num === 1) ? { x: 210, y: FLOOR_Y - 28 } : null;
+
   return {
     platforms,
     playerStart: { x: 115,      y: FLOOR_Y - 130 },
     exitPos:     { x: GW - 115, y: FLOOR_Y - 128 },
+    gunPos,
+    floorY: FLOOR_Y,
   };
 }
 
@@ -241,28 +226,28 @@ class MenuScene extends Phaser.Scene {
     g.lineStyle(1, C.GRID);
     for (let x = 0; x <= GW; x += 80) g.lineBetween(x, 0, x, GH);
     for (let y = 0; y <= GH; y += 80) g.lineBetween(0, y, GW, y);
-    g.lineStyle(3, C.PO); g.strokeRect(14, 14, GW - 28, GH - 28);
-    g.lineStyle(1, C.PB, 0.5); g.strokeRect(20, 20, GW - 40, GH - 40);
-    g.fillStyle(C.PO, 0.07); g.fillRect(0, 0, 60, GH);
-    g.fillStyle(C.PB, 0.07); g.fillRect(GW - 60, 0, 60, GH);
+    g.lineStyle(3, C.SG_BEAM); g.strokeRect(14, 14, GW - 28, GH - 28);
+    g.lineStyle(1, C.SG_COLD, 0.5); g.strokeRect(20, 20, GW - 40, GH - 40);
+    g.fillStyle(C.SG_BEAM, 0.07); g.fillRect(0, 0, 60, GH);
+    g.fillStyle(C.SG_COLD, 0.07); g.fillRect(GW - 60, 0, 60, GH);
 
     this._logo(GW / 2, GH * 0.27, 56);
 
     this.add.text(GW/2, GH*0.47, 'APERTURE', {
       fontFamily: 'Courier New,monospace', fontSize: '74px',
-      color: '#ff6600', stroke: '#000', strokeThickness: 7,
+      color: '#ff9900', stroke: '#000', strokeThickness: 7,
     }).setOrigin(0.5);
-    this.add.text(GW/2, GH*0.615, 'PLATFORMER', {
+    this.add.text(GW/2, GH*0.615, 'STATE GUN', {
       fontFamily: 'Courier New,monospace', fontSize: '44px',
-      color: '#0088ff', stroke: '#000', strokeThickness: 5,
+      color: '#00c8ff', stroke: '#000', strokeThickness: 5,
     }).setOrigin(0.5);
-    this.add.text(GW/2, GH*0.71, 'CELL-SHADED PORTAL PUZZLE', {
+    this.add.text(GW/2, GH*0.71, 'MOLECULAR DENSITY MANIPULATION', {
       fontFamily: 'Courier New,monospace', fontSize: '15px', color: '#7899bb',
     }).setOrigin(0.5);
 
     const hint = IS_MOBILE
       ? 'TIPPEN UM ZU STARTEN'
-      : 'WASD / ↑↓←→  Move   SPACE  Jump   LMB  Orange Portal   RMB  Blue Portal';
+      : 'WASD/Arrows: Move  ·  Space: Jump  ·  LMB: Verflüssigen  ·  RMB: Einfrieren  ·  R: Reset';
     this.add.text(GW/2, GH*0.79, hint, {
       fontFamily: 'Courier New,monospace', fontSize: '12px', color: '#446680',
     }).setOrigin(0.5);
@@ -279,14 +264,18 @@ class MenuScene extends Phaser.Scene {
 
   _logo(cx, cy, r) {
     const g = this.add.graphics();
-    g.lineStyle(3, C.PO); g.strokeCircle(cx, cy, r);
-    g.fillStyle(C.PO, 0.12); g.fillCircle(cx, cy, r);
-    for (let i = 0; i < 8; i++) {
-      const a = (i/8)*Math.PI*2;
+    g.lineStyle(3, C.SG_BEAM); g.strokeCircle(cx, cy, r);
+    g.fillStyle(C.SG_BEAM, 0.12); g.fillCircle(cx, cy, r);
+    // Molecular lattice spokes
+    for (let i = 0; i < 6; i++) {
+      const a = (i/6)*Math.PI*2;
       g.lineBetween(cx+Math.cos(a)*r*0.38, cy+Math.sin(a)*r*0.38, cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+      g.fillStyle(C.SG_COLD, 0.9);
+      g.fillCircle(cx+Math.cos(a)*r*0.72, cy+Math.sin(a)*r*0.72, 4);
     }
     g.fillStyle(C.BG); g.fillCircle(cx, cy, r*0.32);
-    g.lineStyle(3, C.PO); g.strokeCircle(cx, cy, r*0.32);
+    g.lineStyle(3, C.SG_BEAM); g.strokeCircle(cx, cy, r*0.32);
+    g.fillStyle(C.SG_COLD, 0.8); g.fillCircle(cx, cy, 6);
     this.tweens.add({ targets: g, angle: 360, duration: 14000, repeat: -1, ease: 'Linear' });
   }
 }
@@ -300,10 +289,13 @@ class GameScene extends Phaser.Scene {
   init(data) {
     this.levelNum      = data.level  || 1;
     this.deaths        = data.deaths || 0;
-    this.portals       = { orange: null, blue: null };
-    this.tpCooldown    = false;
+    this.hasGun        = data.hasGun || false;
     this.levelDone     = false;
     this._jumpConsumed = false;
+    this.platObjects   = [];   // { def, state, origCX, origCY, staticSprite, dynamicBody, visualGfx, liquidTween }
+    this.liquidGroup   = null;
+    this._freezeCooldown = false;
+    this._prevMobileFreeze = false;
   }
 
   preload() {
@@ -328,10 +320,11 @@ class GameScene extends Phaser.Scene {
     g.fillStyle(C.VISOR);   g.fillRect(9,6,14,7);
     g.lineStyle(2,C.OUT);   g.strokeRect(9,6,14,7);
     g.fillStyle(0xffffff,0.35); g.fillRect(9,6,4,4);
-    g.fillStyle(C.PO); g.fillRect(24,22,10,7);
-    g.lineStyle(2,C.OUT); g.strokeRect(24,22,10,7);
-    g.fillStyle(C.PB); g.fillRect(26,24,6,3);
-    g.generateTexture('player',34,54); g.destroy();
+    // Gun on arm
+    g.fillStyle(C.GUN_COL); g.fillRect(24,20,11,8);
+    g.lineStyle(2,C.OUT); g.strokeRect(24,20,11,8);
+    g.fillStyle(C.SG_BEAM,0.9); g.fillRect(33,22,5,4);
+    g.generateTexture('player',40,54); g.destroy();
   }
 
   create() {
@@ -339,12 +332,38 @@ class GameScene extends Phaser.Scene {
     this.lvl = lvl;
 
     this._drawBG();
-    this.platGroup = this.physics.add.staticGroup();
 
-    const gfx = this.add.graphics().setDepth(5);
-    lvl.platforms.forEach(p => { this._drawPlat(gfx, p); this._addBody(p); });
+    this.platGroup  = this.physics.add.staticGroup();
+    this.liquidGroup = this.physics.add.group();
+
+    const platGfxLayer = this.add.graphics().setDepth(5);
+
+    lvl.platforms.forEach(p => {
+      const gfx = this.add.graphics().setDepth(5);
+      this._drawPlat(gfx, p);
+      const cx = p.x + p.w / 2, cy = p.y + p.h / 2;
+      const sp = this.platGroup.create(cx, cy, 'px');
+      sp.setVisible(false).setDisplaySize(p.w, p.h).refreshBody();
+      this.platObjects.push({
+        def: { ...p },
+        state: 'solid',
+        origCX: cx, origCY: cy,
+        staticSprite: sp,
+        dynamicBody: null,
+        visualGfx: gfx,
+        liquidTween: null,
+      });
+    });
+
+    // Liquid-on-solid collision
+    this.physics.add.collider(this.liquidGroup, this.platGroup);
 
     this._buildExit(lvl.exitPos);
+
+    // Gun pickup (level 1 only, or player already has it)
+    if (lvl.gunPos && !this.hasGun) {
+      this._buildGunPickup(lvl.gunPos);
+    }
 
     this.player = this.physics.add.sprite(lvl.playerStart.x, lvl.playerStart.y, 'player');
     this.player.body.setSize(20,50).setOffset(7,2);
@@ -352,14 +371,20 @@ class GameScene extends Phaser.Scene {
 
     this.physics.add.collider(this.player, this.platGroup);
 
-    this.pGfx  = this.add.graphics().setDepth(16);
-    this.xhGfx = this.add.graphics().setDepth(40);
-    this.hudGfx = this.add.graphics().setDepth(51);
+    this.beamGfx = this.add.graphics().setDepth(30);
+    this.xhGfx   = this.add.graphics().setDepth(40);
+    this.hudGfx  = this.add.graphics().setDepth(51);
 
     this._buildHUD();
     this._setupInput();
+
+    // Tutorial hint for level 1
+    if (this.levelNum === 1 && !this.hasGun) {
+      this._showHint('Hol die STATE GUN! Laufe darüber.', 3500);
+    }
   }
 
+  // ── Background ──────────────────────────────────────────────────────────────
   _drawBG() {
     const g = this.add.graphics().setDepth(0);
     g.fillStyle(C.BG); g.fillRect(0,0,GW,GH);
@@ -371,6 +396,7 @@ class GameScene extends Phaser.Scene {
     g.lineStyle(2,0x18304a,0.7); g.strokeRect(7,7,GW-14,GH-14);
   }
 
+  // ── Platform drawing ─────────────────────────────────────────────────────────
   _drawPlat(g, p) {
     const {x,y,w,h,type} = p;
     if (type==='floor') {
@@ -379,8 +405,8 @@ class GameScene extends Phaser.Scene {
       for (let tx=x;tx<x+w;tx+=40) g.lineBetween(tx,y,tx,y+h);
       for (let ty=y;ty<y+h;ty+=40) g.lineBetween(x,ty,x+w,ty);
       g.fillStyle(C.FLOOR_HI); g.fillRect(x,y,w,5);
-      this._stripes(g,x,         y,48,h,true);
-      this._stripes(g,x+w-48,    y,48,h,false);
+      this._stripes(g,x,y,48,h,true);
+      this._stripes(g,x+w-48,y,48,h,false);
       g.lineStyle(OL,C.OUT); g.strokeRect(x,y,w,h);
     } else if (type==='ceil') {
       g.fillStyle(C.CEIL); g.fillRect(x,y,w,h);
@@ -414,6 +440,39 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  _drawPlatLiquid(g, p) {
+    const {x,y,w,h} = p;
+    // molten glow layers
+    for (let i=4;i>=1;i--) {
+      g.fillStyle(C.LIQUID, 0.04 + i*0.04);
+      g.fillRect(x - i*3, y - i*3, w + i*6, h + i*6);
+    }
+    g.fillStyle(C.LIQUID_D, 0.88); g.fillRect(x, y, w, h);
+    // boiling surface lines
+    g.lineStyle(2, C.LIQUID, 0.9);
+    for (let tx = x+8; tx < x+w-4; tx += 14) {
+      g.lineBetween(tx, y+2, tx+6, y+h-2);
+    }
+    g.fillStyle(C.SG_BEAM, 0.55); g.fillRect(x, y, w, 4);
+    g.lineStyle(OL, C.OUT); g.strokeRect(x, y, w, h);
+  }
+
+  _drawPlatFrozen(g, p) {
+    const {x,y,w,h} = p;
+    // ice blue glow
+    for (let i=3;i>=1;i--) {
+      g.fillStyle(C.SG_COLD, 0.04 + i*0.03);
+      g.fillRect(x - i*2, y - i*2, w + i*4, h + i*4);
+    }
+    g.fillStyle(0x1a4466, 0.92); g.fillRect(x, y, w, h);
+    g.fillStyle(C.SG_COLD, 0.22); g.fillRect(x, y, w, h);
+    // ice crystal lines
+    g.lineStyle(1, C.SG_COLD, 0.6);
+    for (let tx = x+6; tx < x+w; tx += 18) g.lineBetween(tx, y, tx-4, y+h);
+    g.fillStyle(0xffffff, 0.18); g.fillRect(x, y, w, 3);
+    g.lineStyle(OL, C.SG_COLD); g.strokeRect(x, y, w, h);
+  }
+
   _stripes(g, sx, sy, sw, sh, l2r) {
     const W = sw/4;
     for (let i=0;i<4;i++) {
@@ -422,11 +481,7 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  _addBody(p) {
-    const sp = this.platGroup.create(p.x+p.w/2, p.y+p.h/2, 'px');
-    sp.setVisible(false).setDisplaySize(p.w,p.h).refreshBody();
-  }
-
+  // ── Exit ────────────────────────────────────────────────────────────────────
   _buildExit(pos) {
     const g = this.add.graphics().setDepth(6);
     g.fillStyle(C.EXIT,0.1);  g.fillEllipse(pos.x,pos.y+10,72,18);
@@ -443,13 +498,50 @@ class GameScene extends Phaser.Scene {
     this.tweens.add({targets:g,alpha:{from:0.85,to:1},duration:650,yoyo:true,repeat:-1});
   }
 
+  // ── Gun pickup ───────────────────────────────────────────────────────────────
+  _buildGunPickup(pos) {
+    const g = this.add.graphics().setDepth(8);
+    this._drawGunIcon(g, pos.x, pos.y);
+    this.tweens.add({ targets: g, y: { from: -4, to: 4 }, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+
+    const label = this.add.text(pos.x, pos.y - 28, 'STATE GUN', {
+      fontFamily: 'Courier New', fontSize: '11px', color: '#ffcc00', stroke: '#000', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(9);
+    this.tweens.add({ targets: label, alpha: { from: 1, to: 0.3 }, duration: 700, yoyo: true, repeat: -1 });
+
+    this._gunPickupGfx   = g;
+    this._gunPickupLabel = label;
+    this._gunPickupPos   = pos;
+  }
+
+  _drawGunIcon(g, cx, cy) {
+    // Gun body
+    g.fillStyle(C.GUN_COL, 0.95); g.fillRect(cx - 18, cy - 7, 36, 12);
+    g.lineStyle(2, C.OUT);        g.strokeRect(cx - 18, cy - 7, 36, 12);
+    // Barrel
+    g.fillStyle(0xaaaaaa, 0.9); g.fillRect(cx + 14, cy - 4, 12, 6);
+    g.lineStyle(2, C.OUT);      g.strokeRect(cx + 14, cy - 4, 12, 6);
+    // Grip
+    g.fillStyle(C.GUN_COL, 0.85); g.fillRect(cx - 8, cy + 5, 10, 10);
+    g.lineStyle(2, C.OUT);         g.strokeRect(cx - 8, cy + 5, 10, 10);
+    // Glow
+    for (let i = 3; i >= 1; i--) {
+      g.fillStyle(C.SG_BEAM, 0.06 + i * 0.04);
+      g.fillRect(cx - 18 - i*4, cy - 7 - i*3, 36 + i*8, 12 + i*6);
+    }
+    // Energy crystal on barrel tip
+    g.fillStyle(C.SG_BEAM, 0.9); g.fillCircle(cx + 26, cy - 1, 4);
+    g.lineStyle(1, C.OUT);       g.strokeCircle(cx + 26, cy - 1, 4);
+  }
+
+  // ── HUD ─────────────────────────────────────────────────────────────────────
   _buildHUD() {
     const g = this.add.graphics().setDepth(50);
     g.fillStyle(C.HUD_BG,0.92); g.fillRect(0,GH-46,GW,46);
-    g.lineStyle(2,C.PO,0.75); g.lineBetween(0,GH-46,GW,GH-46);
+    g.lineStyle(2,C.SG_BEAM,0.75); g.lineBetween(0,GH-46,GW,GH-46);
 
     this.chamberTxt = this.add.text(GW/2,GH-23,`CHAMBER  ${String(this.levelNum).padStart(2,'0')}`,{
-      fontFamily:'Courier New',fontSize:'18px',color:'#ff6600',stroke:'#000',strokeThickness:2,
+      fontFamily:'Courier New',fontSize:'18px',color:'#ff9900',stroke:'#000',strokeThickness:2,
     }).setOrigin(0.5).setDepth(52);
 
     this.deathTxt = this.add.text(10,GH-38,`DEATHS: ${this.deaths}`,{
@@ -458,38 +550,52 @@ class GameScene extends Phaser.Scene {
 
     if (!IS_MOBILE) {
       this.add.text(GW-8,GH-38,
-        'WASD/Arrows: Move  ·  Space: Jump  ·  LMB: Orange  ·  RMB: Blue  ·  R: Reset',{
+        'WASD/Arrows: Move  ·  Space: Jump  ·  LMB: Verflüssigen  ·  RMB: Einfrieren  ·  R: Reset',{
         fontFamily:'Courier New',fontSize:'9px',color:'#3a5570',
       }).setOrigin(1,0).setDepth(52);
     }
 
-    this.add.text(8,GH-14,'PORTALS:',{
+    // Gun status labels
+    this.add.text(8,GH-14,'STATE GUN:',{
       fontFamily:'Courier New',fontSize:'10px',color:'#446680',
     }).setOrigin(0,1).setDepth(52);
 
-    // Portal indicators (O / B labels redrawn in _updateHUD)
-    this._plblO = this.add.text(89, GH-23,'O',{
-      fontFamily:'Courier New',fontSize:'12px',color:'#000',fontStyle:'bold',
-    }).setOrigin(0.5).setDepth(53);
-    this._plblB = this.add.text(125,GH-23,'B',{
-      fontFamily:'Courier New',fontSize:'12px',color:'#000',fontStyle:'bold',
-    }).setOrigin(0.5).setDepth(53);
+    this._hudGunLbl = this.add.text(90,GH-23,'—',{
+      fontFamily:'Courier New',fontSize:'11px',color:'#886600',fontStyle:'bold',
+    }).setOrigin(0,0.5).setDepth(53);
+
+    this._hudFreezeLbl = this.add.text(175,GH-23,'FREEZE',{
+      fontFamily:'Courier New',fontSize:'11px',color:'#005588',fontStyle:'bold',
+    }).setOrigin(0,0.5).setDepth(53);
   }
 
   _updateHUD() {
     this.hudGfx.clear();
-    const oA = !!this.portals.orange, bA = !!this.portals.blue;
-    this.hudGfx.fillStyle(oA?C.PO:0x222222);
-    this.hudGfx.fillEllipse(89,GH-23,28,38);
-    this.hudGfx.lineStyle(2,oA?C.PO:0x333333);
-    this.hudGfx.strokeEllipse(89,GH-23,30,40);
-    this.hudGfx.fillStyle(bA?C.PB:0x222222);
-    this.hudGfx.fillEllipse(125,GH-23,28,38);
-    this.hudGfx.lineStyle(2,bA?C.PB:0x333333);
-    this.hudGfx.strokeEllipse(125,GH-23,30,40);
     this.deathTxt.setText(`DEATHS: ${this.deaths}`);
+
+    if (this.hasGun) {
+      // Gun indicator (orange dot)
+      this.hudGfx.fillStyle(C.SG_BEAM, 0.95);
+      this.hudGfx.fillCircle(80, GH-23, 9);
+      this.hudGfx.lineStyle(2, C.OUT);
+      this.hudGfx.strokeCircle(80, GH-23, 9);
+      this._hudGunLbl.setText('BEREIT').setColor('#ff9900');
+
+      // Freeze indicator
+      const hasLiquid = this.platObjects.some(po => po.state === 'liquid');
+      const freezeCol = this._freezeCooldown ? 0x224466 : (hasLiquid ? C.SG_COLD : 0x224466);
+      this.hudGfx.fillStyle(freezeCol, 0.9);
+      this.hudGfx.fillRoundedRect(160, GH-37, 72, 28, 6);
+      this.hudGfx.lineStyle(2, this._freezeCooldown ? 0x224466 : (hasLiquid ? C.SG_COLD : 0x335566));
+      this.hudGfx.strokeRoundedRect(160, GH-37, 72, 28, 6);
+      this._hudFreezeLbl.setColor(this._freezeCooldown ? '#335566' : (hasLiquid ? '#00c8ff' : '#335566'));
+    } else {
+      this._hudGunLbl.setText('KEINE WAFFE').setColor('#443311');
+      this._hudFreezeLbl.setColor('#223344');
+    }
   }
 
+  // ── Input ───────────────────────────────────────────────────────────────────
   _setupInput() {
     this.keys = this.input.keyboard.addKeys({
       left:  Phaser.Input.Keyboard.KeyCodes.LEFT,
@@ -501,82 +607,201 @@ class GameScene extends Phaser.Scene {
       space: Phaser.Input.Keyboard.KeyCodes.SPACE,
     });
 
-    // Safe: only disable context menu on desktop (mouse exists)
-    if (this.input.mouse) { try { this.input.mouse.disableContextMenu(); } catch(e) { console.warn('disableContextMenu:', e); } }
+    if (this.input.mouse) { try { this.input.mouse.disableContextMenu(); } catch(e) {} }
 
-    // Pointer → shoot portal
     this.input.on('pointerdown', ptr => {
       if (IS_MOBILE) {
-        // On mobile: tap game area shoots selected portal color
-        // (control buttons are HTML elements, won't trigger this)
-        this._shootPortal(MOBILE.portal, ptr.x, ptr.y);
+        // Tap on canvas = shoot state gun toward tap
+        this._shootStateGun(ptr.x, ptr.y);
       } else {
-        if (ptr.leftButtonDown())  this._shootPortal('orange', ptr.x, ptr.y);
-        if (ptr.rightButtonDown()) this._shootPortal('blue',   ptr.x, ptr.y);
+        if (ptr.leftButtonDown())  this._shootStateGun(ptr.x, ptr.y);
+        if (ptr.rightButtonDown()) this._freezeAll();
       }
     });
 
     this.input.keyboard.on('keydown-R', () => {
-      this.scene.restart({ level: this.levelNum, deaths: this.deaths });
+      this.scene.restart({ level: this.levelNum, deaths: this.deaths, hasGun: this.hasGun });
+    });
+    this.input.keyboard.on('keydown-F', () => this._freezeAll());
+  }
+
+  // ── State Gun: shoot ─────────────────────────────────────────────────────────
+  _shootStateGun(sx, sy) {
+    if (!this.hasGun || this.levelDone) return;
+
+    const px = this.player.x, py = this.player.y;
+    const ddx = sx - px, ddy = sy - py;
+    const len = Math.hypot(ddx, ddy);
+    if (len < 1) return;
+    const rdx = ddx/len, rdy = ddy/len;
+
+    let bestT = Infinity, bestIdx = -1, bestHit = null;
+
+    this.platObjects.forEach((po, idx) => {
+      if (po.def.noState || po.state === 'liquid') return;
+      const d = po.def;
+      const hit = rayAABB(px, py, rdx, rdy, d.x, d.y, d.x+d.w, d.y+d.h);
+      if (hit && hit.t < bestT) { bestT = hit.t; bestIdx = idx; bestHit = hit; }
+    });
+
+    if (bestIdx < 0) {
+      // Beam goes to void — draw fading shot
+      this._drawBeam(px, py, px + rdx*1200, py + rdy*1200, false);
+      return;
+    }
+
+    this._drawBeam(px, py, bestHit.x, bestHit.y, true);
+    this._liquefyPlatform(bestIdx);
+  }
+
+  // ── State Gun: liquefy ───────────────────────────────────────────────────────
+  _liquefyPlatform(idx) {
+    const po = this.platObjects[idx];
+    if (po.state !== 'solid') return;
+
+    po.state = 'liquid';
+
+    // Remove static physics body
+    po.staticSprite.destroy();
+    po.staticSprite = null;
+
+    // Create falling dynamic body
+    const cx = po.origCX, cy = po.origCY;
+    const img = this.physics.add.image(cx, cy, 'px');
+    img.setVisible(false);
+    img.setDisplaySize(po.def.w, po.def.h);
+    img.body.setSize(po.def.w, po.def.h);
+    img.body.setGravityY(280);
+    img.body.setDrag(30, 0);
+    img.body.setCollideWorldBounds(false);
+    this.liquidGroup.add(img);
+    po.dynamicBody = img;
+
+    // Redraw in liquid style
+    po.visualGfx.clear();
+    this._drawPlatLiquid(po.visualGfx, po.def);
+
+    // Wobble + pulse tween on the gfx offset
+    po.liquidTween = this.tweens.add({
+      targets: po.visualGfx,
+      scaleX: { from: 1, to: 1.04 },
+      alpha:  { from: 0.95, to: 0.65 },
+      duration: 220,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+
+    this.cameras.main.shake(80, 0.003);
+    this._showHint('EINFRIEREN: RMB / F / ❄', 2200);
+  }
+
+  // ── State Gun: freeze all ────────────────────────────────────────────────────
+  _freezeAll() {
+    if (!this.hasGun || this._freezeCooldown || this.levelDone) return;
+    const liquids = this.platObjects.filter(po => po.state === 'liquid');
+    if (liquids.length === 0) return;
+
+    this._freezeCooldown = true;
+
+    // Ice-blue flash
+    const f = this.add.graphics().setDepth(45);
+    f.fillStyle(C.SG_COLD, 0.25); f.fillRect(0, 0, GW, GH);
+    this.tweens.add({ targets: f, alpha: 0, duration: 350, onComplete: () => f.destroy() });
+    this.cameras.main.shake(100, 0.004);
+
+    liquids.forEach(po => {
+      if (!po.dynamicBody) return;
+
+      // New position from physics body
+      const newCX = po.dynamicBody.x;
+      const newCY = po.dynamicBody.y;
+      const newX  = newCX - po.def.w / 2;
+      const newY  = newCY - po.def.h / 2;
+
+      // Destroy dynamic body
+      po.dynamicBody.destroy();
+      po.dynamicBody = null;
+
+      // Stop tween, reset scale/alpha
+      if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
+      po.visualGfx.setScale(1).setAlpha(1);
+
+      // Update def to new position
+      po.def.x = newX;
+      po.def.y = newY;
+
+      // Sync graphics offset to new position (original draw was at old pos)
+      po.visualGfx.x = newX - (po.origCX - po.def.w/2);  // delta from original
+      po.visualGfx.y = newY - (po.origCY - po.def.h/2);
+
+      // Redraw frozen visual at original coordinates (gfx is offset by .x/.y)
+      const drawDef = { ...po.def, x: po.origCX - po.def.w/2, y: po.origCY - po.def.h/2 };
+      po.visualGfx.clear();
+      this._drawPlatFrozen(po.visualGfx, drawDef);
+
+      // New static body
+      const sp = this.platGroup.create(newCX, newCY, 'px');
+      sp.setVisible(false).setDisplaySize(po.def.w, po.def.h).refreshBody();
+      po.staticSprite = sp;
+      po.origCX = newCX;
+      po.origCY = newCY;
+      po.state = 'solid';
+
+      // Brief ice glow flash on new position
+      const ig = this.add.graphics().setDepth(25);
+      ig.fillStyle(C.SG_COLD, 0.55); ig.fillRect(newX, newY, po.def.w, po.def.h);
+      this.tweens.add({ targets: ig, alpha: 0, duration: 400, onComplete: () => ig.destroy() });
+    });
+
+    this.time.delayedCall(600, () => { this._freezeCooldown = false; });
+  }
+
+  // ── Gun beam visual ──────────────────────────────────────────────────────────
+  _drawBeam(x1, y1, x2, y2, hit) {
+    this.beamGfx.clear();
+    const col = hit ? C.SG_BEAM : 0x886600;
+    for (let i = 4; i >= 1; i--) {
+      this.beamGfx.lineStyle(i * 2.5, col, 0.06 + i * 0.06);
+      this.beamGfx.lineBetween(x1, y1, x2, y2);
+    }
+    this.beamGfx.lineStyle(2, 0xffffff, 0.8);
+    this.beamGfx.lineBetween(x1, y1, x2, y2);
+    if (hit) {
+      this.beamGfx.fillStyle(C.SG_BEAM, 0.9);
+      this.beamGfx.fillCircle(x2, y2, 7);
+    }
+    this.tweens.add({
+      targets: this.beamGfx, alpha: 0, duration: 160,
+      onComplete: () => { this.beamGfx.setAlpha(1).clear(); },
     });
   }
 
-  _shootPortal(color, sx, sy) {
-    const px = this.player.x, py = this.player.y;
-    const ddx = sx-px, ddy = sy-py;
-    const len = Math.hypot(ddx,ddy);
-    if (len<1) return;
-    const rdx = ddx/len, rdy = ddy/len;
-
-    let best = null;
-    for (const p of this.lvl.platforms) {
-      if (p.noPortal) continue;
-      const hit = rayAABB(px,py,rdx,rdy,p.x,p.y,p.x+p.w,p.y+p.h);
-      if (hit && (!best || hit.t < best.t)) best = { ...hit, plat: p };
-    }
-    if (!best) return;
-
-    const HALF = 24;
-    let hx = best.x, hy = best.y;
-    if (best.ny !== 0) {
-      const hw = Math.min(HALF, Math.floor(best.plat.w / 2));
-      hx = Math.max(best.plat.x+hw, Math.min(best.plat.x+best.plat.w-hw, hx));
-    } else {
-      const hh = Math.min(HALF, Math.floor(best.plat.h / 2));
-      hy = Math.max(best.plat.y+hh, Math.min(best.plat.y+best.plat.h-hh, hy));
-    }
-    this._placePortal(color, hx, hy, best.nx, best.ny);
+  // ── Hint text ────────────────────────────────────────────────────────────────
+  _showHint(msg, duration) {
+    if (this._hintTxt) { this._hintTxt.destroy(); this._hintTween?.stop(); }
+    this._hintTxt = this.add.text(GW/2, GH/2 - 80, msg, {
+      fontFamily: 'Courier New', fontSize: '16px',
+      color: '#ffcc00', stroke: '#000', strokeThickness: 3,
+      backgroundColor: '#00000088', padding: { x: 12, y: 6 },
+    }).setOrigin(0.5).setDepth(55);
+    this._hintTween = this.tweens.add({
+      targets: this._hintTxt, alpha: { from: 1, to: 0 },
+      duration: 400, delay: duration - 400,
+      onComplete: () => { this._hintTxt?.destroy(); this._hintTxt = null; },
+    });
   }
 
-  _placePortal(color, x, y, nx, ny) {
-    if (this.portals[color]) this.portals[color].gfx.destroy();
-    const gfx = this.add.graphics().setDepth(17);
-    this._drawPortalGfx(gfx, x, y, nx, ny, color);
-    this.portals[color] = { x, y, nx, ny, gfx };
-    this.cameras.main.shake(70, 0.002);
-  }
-
-  _drawPortalGfx(g, x, y, nx, ny, color) {
-    const col    = color==='orange'?C.PO:C.PB;
-    const colDim = color==='orange'?C.PO_DIM:C.PB_DIM;
-    const horiz  = ny!==0;
-    const pw = horiz?48:16, ph = horiz?16:60;
-    for (let i=5;i>=1;i--) { g.fillStyle(col,0.025+i*0.025); g.fillEllipse(x,y,pw+i*14,ph+i*14); }
-    g.fillStyle(colDim,0.92); g.fillEllipse(x,y,pw-4,ph-4);
-    g.fillStyle(0x000000,0.4); g.fillEllipse(x,y,pw*0.55,ph*0.55);
-    g.lineStyle(4,col); g.strokeEllipse(x,y,pw,ph);
-    g.lineStyle(1,0xffffff,0.35); g.strokeEllipse(x,y,pw*0.7,ph*0.7);
-    const arx = x+nx*(horiz?14:18), ary = y+ny*(horiz?18:14);
-    g.lineStyle(2,col,0.8); g.lineBetween(x,y,arx,ary);
-    g.fillStyle(col); g.fillCircle(arx,ary,3);
-  }
-
+  // ── Update loop ──────────────────────────────────────────────────────────────
   update() {
     if (this.levelDone) return;
     this._move();
-    this._checkTeleport();
+    this._updateLiquidVisuals();
+    this._cleanupFallenPlatforms();
+    this._checkGunPickup();
     this._checkExit();
     this._checkFall();
+    this._handleMobileFreeze();
     if (!IS_MOBILE) this._drawXhair();
     else            this.xhGfx.clear();
     this._updateHUD();
@@ -585,9 +810,9 @@ class GameScene extends Phaser.Scene {
   _move() {
     const SPEED=235, JUMP=-540;
     const k=this.keys, b=this.player.body;
-    const left  = k.left.isDown  || k.a.isDown    || MOBILE.left;
-    const right = k.right.isDown || k.d.isDown     || MOBILE.right;
-    const jump  = k.up.isDown    || k.w.isDown     || k.space.isDown || MOBILE.jump;
+    const left  = k.left.isDown  || k.a.isDown  || MOBILE.left;
+    const right = k.right.isDown || k.d.isDown   || MOBILE.right;
+    const jump  = k.up.isDown    || k.w.isDown   || k.space.isDown || MOBILE.jump;
 
     this.player.setVelocityX(left?-SPEED:right?SPEED:0);
     if (left)  this.player.setFlipX(true);
@@ -600,55 +825,77 @@ class GameScene extends Phaser.Scene {
     if (!jump) this._jumpConsumed = false;
   }
 
-  _checkTeleport() {
-    const {orange,blue} = this.portals;
-    if (!orange||!blue||this.tpCooldown) return;
-    const px=this.player.x, py=this.player.y;
-    const vx=this.player.body.velocity.x, vy=this.player.body.velocity.y;
-
-    const tryTP = (src,dst) => {
-      if (this.tpCooldown) return;
-      const horiz = src.ny!==0;
-      const hDist = Math.abs(px-src.x), vDist = Math.abs(py-src.y);
-      if (horiz?(hDist>24||vDist>40):(hDist>28||vDist>30)) return;
-      if (vx*(-src.nx)+vy*(-src.ny) < 8) return;
-      const nv = portalVel(vx,vy,src.nx,src.ny,dst.nx,dst.ny);
-      this.player.setPosition(dst.x+dst.nx*36, dst.y+dst.ny*36);
-      this.player.setVelocity(nv.x,nv.y);
-      this.tpCooldown = true;
-      this.time.delayedCall(380, ()=>{ this.tpCooldown=false; });
-      this._tpFX();
-    };
-    tryTP(orange,blue); tryTP(blue,orange);
+  _handleMobileFreeze() {
+    // Edge-trigger: fire once on press, not every frame
+    if (MOBILE.freeze && !this._prevMobileFreeze) this._freezeAll();
+    this._prevMobileFreeze = MOBILE.freeze;
   }
 
-  _tpFX() {
-    const f = this.add.graphics().setDepth(45);
-    f.fillStyle(0xffffff,0.22); f.fillRect(0,0,GW,GH);
-    this.tweens.add({targets:f,alpha:0,duration:200,onComplete:()=>f.destroy()});
-    this.cameras.main.shake(140,0.004);
+  _updateLiquidVisuals() {
+    this.platObjects.forEach(po => {
+      if (po.state !== 'liquid' || !po.dynamicBody) return;
+      // Shift the pre-drawn graphics to follow the falling body
+      po.visualGfx.x = po.dynamicBody.x - po.origCX;
+      po.visualGfx.y = po.dynamicBody.y - po.origCY;
+    });
+  }
+
+  _cleanupFallenPlatforms() {
+    this.platObjects.forEach(po => {
+      if (po.state !== 'liquid' || !po.dynamicBody) return;
+      if (po.dynamicBody.y > GH + 120) {
+        // Fell off screen — remove cleanly
+        po.dynamicBody.destroy(); po.dynamicBody = null;
+        if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
+        po.visualGfx.setVisible(false);
+        po.state = 'gone';
+      }
+    });
+  }
+
+  _checkGunPickup() {
+    if (this.hasGun || !this._gunPickupPos) return;
+    const gp = this._gunPickupPos;
+    if (Math.hypot(this.player.x - gp.x, this.player.y - gp.y) < 45) {
+      this.hasGun = true;
+      this._gunPickupGfx?.destroy();
+      this._gunPickupLabel?.destroy();
+      this._gunPickupPos = null;
+
+      // Pickup flash
+      const f = this.add.graphics().setDepth(45);
+      f.fillStyle(C.SG_BEAM, 0.4); f.fillRect(0,0,GW,GH);
+      this.tweens.add({ targets: f, alpha: 0, duration: 300, onComplete: () => f.destroy() });
+      this.cameras.main.shake(120, 0.005);
+      this._showHint('STATE GUN AUFGEHOBEN! LMB = Verflüssigen  ·  RMB/F/❄ = Einfrieren', 4000);
+    }
   }
 
   _checkExit() {
     const ep = this.lvl.exitPos;
-    if (Math.hypot(this.player.x-ep.x,this.player.y-ep.y)<40) this._win();
+    if (Math.hypot(this.player.x-ep.x, this.player.y-ep.y) < 40) this._win();
   }
 
   _checkFall() {
     if (this.player.y > GH+80 || this.player.y < -80) {
       this.deaths++;
-      this.scene.restart({level:this.levelNum,deaths:this.deaths});
+      this.scene.restart({ level: this.levelNum, deaths: this.deaths, hasGun: this.hasGun });
     }
   }
 
   _drawXhair() {
     this.xhGfx.clear();
     const {x,y} = this.input.activePointer;
-    const S=11,G=5;
-    this.xhGfx.lineStyle(2,C.WHITE,0.88);
+    const col = this.hasGun ? C.SG_BEAM : C.WHITE;
+    const S=11, G=5;
+    this.xhGfx.lineStyle(2, col, 0.88);
     this.xhGfx.lineBetween(x-S-G,y,x-G,y); this.xhGfx.lineBetween(x+G,y,x+S+G,y);
     this.xhGfx.lineBetween(x,y-S-G,x,y-G); this.xhGfx.lineBetween(x,y+G,x,y+S+G);
     this.xhGfx.strokeCircle(x,y,3.5);
+    if (this.hasGun) {
+      // Small inner dot
+      this.xhGfx.fillStyle(col, 0.9); this.xhGfx.fillCircle(x,y,2);
+    }
   }
 
   _win() {
@@ -661,17 +908,17 @@ class GameScene extends Phaser.Scene {
       fontFamily:'Courier New',fontSize:'58px',color:'#00ff88',stroke:'#000',strokeThickness:7,
     }).setOrigin(0.5).setDepth(61);
     this.add.text(GW/2,GH/2+22,`CHAMBER ${String(this.levelNum).padStart(2,'0')} CLEARED`,{
-      fontFamily:'Courier New',fontSize:'22px',color:'#ff6600',stroke:'#000',strokeThickness:3,
+      fontFamily:'Courier New',fontSize:'22px',color:'#ff9900',stroke:'#000',strokeThickness:3,
     }).setOrigin(0.5).setDepth(61);
     this.time.delayedCall(2400,()=>{
-      this.scene.start('Game',{level:this.levelNum+1,deaths:this.deaths});
+      this.scene.start('Game',{level:this.levelNum+1, deaths:this.deaths, hasGun:true});
     });
   }
 }
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 new Phaser.Game({
-  type:            Phaser.CANVAS, // CANVAS is most compatible on iOS Safari
+  type:            Phaser.CANVAS,
   width:           GW,
   height:          GH,
   backgroundColor: '#060c14',
@@ -688,7 +935,7 @@ new Phaser.Game({
   },
   scene: [MenuScene, GameScene],
   input: {
-    activePointers: 4, // support multi-touch
+    activePointers: 4,
   },
 });
 </script>
