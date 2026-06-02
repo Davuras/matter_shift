@@ -335,8 +335,9 @@ class GameScene extends Phaser.Scene {
 
     this._drawBG();
 
-    this.platGroup  = this.physics.add.staticGroup();
-    this.liquidGroup = this.physics.add.group();
+    this.platGroup       = this.physics.add.staticGroup();
+    this.liquidGroup     = this.physics.add.group(); // alle liquid (kein player-collider)
+    this.colLiquidGroup  = this.physics.add.group(); // nur columns (player kann draufstehen)
 
     const platGfxLayer = this.add.graphics().setDepth(5);
 
@@ -372,8 +373,8 @@ class GameScene extends Phaser.Scene {
     this.player.setDepth(20).setCollideWorldBounds(false);
 
     this.physics.add.collider(this.player, this.platGroup);
-    // Player can stand on liquid columns (elevator / bridge-building)
-    this.physics.add.collider(this.player, this.liquidGroup);
+    // Only columns get player-collider so player can ride them (elevator)
+    this.physics.add.collider(this.player, this.colLiquidGroup);
 
     this.beamGfx = this.add.graphics().setDepth(30);
     this.xhGfx   = this.add.graphics().setDepth(40);
@@ -751,6 +752,7 @@ class GameScene extends Phaser.Scene {
     img.body.setVelocityX(drift);
     img.body.setCollideWorldBounds(false);
     this.liquidGroup.add(img);
+    if (isCol) this.colLiquidGroup.add(img);
     po.dynamicBody = img;
 
     if (po.liquidTween) { po.liquidTween.stop(); po.liquidTween = null; }
