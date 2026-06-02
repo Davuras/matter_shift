@@ -610,7 +610,7 @@ class GameScene extends Phaser.Scene {
       if (this.tpCooldown) return;
       const horiz = src.ny!==0;
       const hDist = Math.abs(px-src.x), vDist = Math.abs(py-src.y);
-      if (horiz?(hDist>24||vDist>30):(hDist>28||vDist>30)) return;
+      if (horiz?(hDist>24||vDist>40):(hDist>28||vDist>30)) return;
       if (vx*(-src.nx)+vy*(-src.ny) < 8) return;
       const nv = portalVel(vx,vy,src.nx,src.ny,dst.nx,dst.ny);
       this.player.setPosition(dst.x+dst.nx*36, dst.y+dst.ny*36);
