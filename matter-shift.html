@@ -355,8 +355,8 @@ class GameScene extends Phaser.Scene {
       });
     });
 
-    // Liquid-on-solid collision
-    this.physics.add.collider(this.liquidGroup, this.platGroup);
+    // No liquid-on-solid collider: platforms fall freely through everything.
+    // Player uses RMB/F/❄ to freeze them at the right height.
 
     this._buildExit(lvl.exitPos);
 
@@ -638,7 +638,7 @@ class GameScene extends Phaser.Scene {
     let bestT = Infinity, bestIdx = -1, bestHit = null;
 
     this.platObjects.forEach((po, idx) => {
-      if (po.def.noState || po.state === 'liquid') return;
+      if (po.def.noState || po.state === 'liquid' || po.state === 'gone') return;
       const d = po.def;
       const hit = rayAABB(px, py, rdx, rdy, d.x, d.y, d.x+d.w, d.y+d.h);
       if (hit && hit.t < bestT) { bestT = hit.t; bestIdx = idx; bestHit = hit; }
@@ -681,12 +681,11 @@ class GameScene extends Phaser.Scene {
     po.visualGfx.clear();
     this._drawPlatLiquid(po.visualGfx, po.def);
 
-    // Wobble + pulse tween on the gfx offset
+    // Only pulse alpha — no scaleX (would skew from canvas origin, not platform center)
     po.liquidTween = this.tweens.add({
       targets: po.visualGfx,
-      scaleX: { from: 1, to: 1.04 },
-      alpha:  { from: 0.95, to: 0.65 },
-      duration: 220,
+      alpha:  { from: 0.95, to: 0.6 },
+      duration: 200,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
