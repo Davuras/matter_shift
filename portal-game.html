@@ -95,7 +95,7 @@ const IS_MOBILE = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 if (IS_MOBILE) document.getElementById('ctrl').style.display = 'block';
 
 // Mobile state object shared between DOM buttons and the game scene
-const MOBILE = { left: false, right: false, jump: false, portal: 'orange', shoot: null };
+const MOBILE = { left: false, right: false, jump: false, portal: 'orange' };
 
 function bindBtn(id, stateKey) {
   const el = document.getElementById(id);
@@ -161,23 +161,23 @@ class RNG {
 
 // ─── Ray vs AABB ─────────────────────────────────────────────────────────────
 function rayAABB(ox, oy, dx, dy, x0, y0, x1, y1) {
-  let tIn = -1e9, tOut = 1e9, nx = 0, ny = 0;
+  let tIn = -1e9, tOut = 1e9, nx = 0, ny = 0, nxO = 0, nyO = 0;
 
   if (Math.abs(dx) > 1e-9) {
     const t1 = (x0-ox)/dx, t2 = (x1-ox)/dx;
-    if (t1<=t2){ if(t1>tIn){tIn=t1;nx=-1;ny=0;} if(t2<tOut)tOut=t2; }
-    else       { if(t2>tIn){tIn=t2;nx= 1;ny=0;} if(t1<tOut)tOut=t1; }
+    if (t1<=t2){ if(t1>tIn){tIn=t1;nx=-1;ny=0;} if(t2<tOut){tOut=t2;nxO= 1;nyO=0;} }
+    else       { if(t2>tIn){tIn=t2;nx= 1;ny=0;} if(t1<tOut){tOut=t1;nxO=-1;nyO=0;} }
   } else if (ox < x0 || ox > x1) return null;
 
   if (Math.abs(dy) > 1e-9) {
     const t1 = (y0-oy)/dy, t2 = (y1-oy)/dy;
-    if (t1<=t2){ if(t1>tIn){tIn=t1;nx=0;ny=-1;} if(t2<tOut)tOut=t2; }
-    else       { if(t2>tIn){tIn=t2;nx=0;ny= 1;} if(t1<tOut)tOut=t1; }
+    if (t1<=t2){ if(t1>tIn){tIn=t1;nx=0;ny=-1;} if(t2<tOut){tOut=t2;nxO=0;nyO= 1;} }
+    else       { if(t2>tIn){tIn=t2;nx=0;ny= 1;} if(t1<tOut){tOut=t1;nxO=0;nyO=-1;} }
   } else if (oy < y0 || oy > y1) return null;
 
   if (tIn > tOut || tOut < 0) return null;
   const t = tIn >= 0 ? tIn : tOut;
-  return { t, x: ox+dx*t, y: oy+dy*t, nx, ny };
+  return { t, x: ox+dx*t, y: oy+dy*t, nx: tIn >= 0 ? nx : nxO, ny: tIn >= 0 ? ny : nyO };
 }
 
 // ─── Portal velocity transform ────────────────────────────────────────────────
@@ -207,16 +207,16 @@ function makeLevel(num) {
   platforms.push({ x: 40,       y: FLOOR_Y - 78, w: 150, h: 20, type: 'platform' });
   platforms.push({ x: GW - 190, y: FLOOR_Y - 78, w: 150, h: 20, type: 'platform' });
 
-  for (let i = 0; i < 2 + num; i++) {
+  for (let i = 0; i < 2 + Math.min(num, 10); i++) {
     const x = rng.f(Math.max(40, gapX - 80), Math.min(GW - 140, gapX + gapW + 80));
     const y = rng.f(CEIL_Y + 30, FLOOR_Y - 110);
     const w = rng.f(80, 160);
     platforms.push({ x, y, w, h: 20, type: 'platform' });
   }
 
-  for (let i = 0; i < Math.max(0, num - 1); i++) {
+  for (let i = 0; i < Math.max(0, Math.min(num, 8) - 1); i++) {
     platforms.push({
-      x: rng.f(60, GW - 80),
+      x: rng.f(200, GW - 200),
       y: rng.f(CEIL_Y + 10, FLOOR_Y - 170),
       w: 22, h: rng.f(90, 200), type: 'column',
     });
@@ -502,7 +502,7 @@ class GameScene extends Phaser.Scene {
     });
 
     // Safe: only disable context menu on desktop (mouse exists)
-    try { if (this.input.mouse) this.input.mouse.disableContextMenu(); } catch(_) {}
+    if (this.input.mouse) { try { this.input.mouse.disableContextMenu(); } catch(e) { console.warn('disableContextMenu:', e); } }
 
     // Pointer → shoot portal
     this.input.on('pointerdown', ptr => {
@@ -539,9 +539,11 @@ class GameScene extends Phaser.Scene {
     const HALF = 24;
     let hx = best.x, hy = best.y;
     if (best.ny !== 0) {
-      hx = Math.max(best.plat.x+HALF, Math.min(best.plat.x+best.plat.w-HALF, hx));
+      const hw = Math.min(HALF, Math.floor(best.plat.w / 2));
+      hx = Math.max(best.plat.x+hw, Math.min(best.plat.x+best.plat.w-hw, hx));
     } else {
-      hy = Math.max(best.plat.y+HALF, Math.min(best.plat.y+best.plat.h-HALF, hy));
+      const hh = Math.min(HALF, Math.floor(best.plat.h / 2));
+      hy = Math.max(best.plat.y+hh, Math.min(best.plat.y+best.plat.h-hh, hy));
     }
     this._placePortal(color, hx, hy, best.nx, best.ny);
   }
@@ -605,6 +607,7 @@ class GameScene extends Phaser.Scene {
     const vx=this.player.body.velocity.x, vy=this.player.body.velocity.y;
 
     const tryTP = (src,dst) => {
+      if (this.tpCooldown) return;
       const horiz = src.ny!==0;
       const hDist = Math.abs(px-src.x), vDist = Math.abs(py-src.y);
       if (horiz?(hDist>24||vDist>30):(hDist>28||vDist>30)) return;
@@ -632,7 +635,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _checkFall() {
-    if (this.player.y > GH+80) {
+    if (this.player.y > GH+80 || this.player.y < -80) {
       this.deaths++;
       this.scene.restart({level:this.levelNum,deaths:this.deaths});
     }
@@ -661,7 +664,7 @@ class GameScene extends Phaser.Scene {
       fontFamily:'Courier New',fontSize:'22px',color:'#ff6600',stroke:'#000',strokeThickness:3,
     }).setOrigin(0.5).setDepth(61);
     this.time.delayedCall(2400,()=>{
-      this.scene.start('Game',{level:this.levelNum+1,deaths:0});
+      this.scene.start('Game',{level:this.levelNum+1,deaths:this.deaths});
     });
   }
 }
