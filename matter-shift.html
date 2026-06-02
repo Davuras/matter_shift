@@ -846,7 +846,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _move() {
-    const SPEED=235, JUMP=-540;
+    const SPEED=235, JUMP=-702;
     const k=this.keys, b=this.player.body;
     const left  = k.left.isDown  || k.a.isDown  || MOBILE.left;
     const right = k.right.isDown || k.d.isDown   || MOBILE.right;
@@ -981,7 +981,7 @@ new Phaser.Game({
   parent:          'phaser-container',
   physics: {
     default: 'arcade',
-    arcade:  { gravity: { y: 860 }, debug: false },
+    arcade:  { gravity: { y: 1118 }, debug: false },
   },
   scale: {
     mode:       Phaser.Scale.FIT,
