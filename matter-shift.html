@@ -290,8 +290,9 @@ class GameScene extends Phaser.Scene {
     this.levelNum      = data.level  || 1;
     this.deaths        = data.deaths || 0;
     this.hasGun        = data.hasGun || false;
-    this.levelDone     = false;
-    this._jumpConsumed = false;
+    this.levelDone      = false;
+    this._jumpConsumed  = false;
+    this._airJumpsLeft  = 0;
     this.platObjects   = [];   // { def, state, origCX, origCY, staticSprite, dynamicBody, visualGfx, liquidTween }
     this.liquidGroup   = null;
     this._freezeCooldown = false;
@@ -846,7 +847,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _move() {
-    const SPEED=236, JUMP=-702;
+    const SPEED=236, JUMP=-702, DJUMP=JUMP*0.25;
     const k=this.keys, b=this.player.body;
     const left  = k.left.isDown  || k.a.isDown  || MOBILE.left;
     const right = k.right.isDown || k.d.isDown   || MOBILE.right;
@@ -856,9 +857,17 @@ class GameScene extends Phaser.Scene {
     if (left)  this.player.setFlipX(true);
     if (right) this.player.setFlipX(false);
 
-    if (jump && b.blocked.down && !this._jumpConsumed) {
-      this.player.setVelocityY(JUMP);
-      this._jumpConsumed = true;
+    if (b.blocked.down) this._airJumpsLeft = 1;
+
+    if (jump && !this._jumpConsumed) {
+      if (b.blocked.down) {
+        this.player.setVelocityY(JUMP);
+        this._jumpConsumed = true;
+      } else if (this._airJumpsLeft > 0) {
+        this.player.setVelocityY(this.player.body.velocity.y + DJUMP);
+        this._airJumpsLeft--;
+        this._jumpConsumed = true;
+      }
     }
     if (!jump) this._jumpConsumed = false;
   }
