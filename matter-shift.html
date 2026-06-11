@@ -761,6 +761,7 @@ class GameScene extends Phaser.Scene {
     img.setDisplaySize(po.currentW, po.currentH);
     img.body.setSize(po.currentW, po.currentH);
     img.body.setGravityY(extraGrav);
+    if (isCol) img.body.maxVelocity.y = 170; // fall slowly enough to tip fully
     img.body.setVelocityX(drift);
     img.body.setCollideWorldBounds(false);
     this.liquidGroup.add(img);
@@ -788,19 +789,19 @@ class GameScene extends Phaser.Scene {
     const absAngle = Math.abs(angle);
 
     // Column: decide final orientation from tip angle
-    // >65° → horizontal bridge, 25-65° → diagonal ramp, <25° → near-vertical
+    // >55° → horizontal bridge, 20-55° → diagonal ramp, <20° → near-vertical
     let frozenW = po.currentW;
     let frozenH = po.currentH;
     let frozenAngle = 0;
 
     if (po.def.type === 'column' && po.tipAngle !== null) {
       const origW = po.colOrigW, origH = po.colOrigH;
-      if (absAngle > 65) {
+      if (absAngle > 55) {
         // Bridge: swap dimensions → wide horizontal platform
         frozenW = origH;
         frozenH = origW;
         frozenAngle = 0;
-      } else if (absAngle > 25) {
+      } else if (absAngle > 20) {
         // Ramp: keep the visual angle, body is rectangular approximation
         frozenW = origH * 0.8;
         frozenH = origW * 0.8;
@@ -958,11 +959,23 @@ class GameScene extends Phaser.Scene {
       const cx = po.dynamicBody.x, cy = po.dynamicBody.y;
 
       if (po.def.type === 'column' && po.tipAngle !== null) {
-        // Animate tip angle toward tipTarget
+        // Animate tip angle toward tipTarget; topple faster once grounded
         const dir = po.tipTarget > 0 ? 1 : -1;
-        po.tipAngle += po.tipSpeed * dt * dir;
+        const grounded = po.dynamicBody.body.blocked.down || po.dynamicBody.body.touching.down;
+        const speed = grounded ? po.tipSpeed * 2.6 : po.tipSpeed;
+        po.tipAngle += speed * dt * dir;
         if (Math.abs(po.tipAngle) >= Math.abs(po.tipTarget))
           po.tipAngle = po.tipTarget;
+
+        // Morph physics body to the AABB of the rotated column so it
+        // actually falls over instead of standing on its narrow end
+        const bw = po.colOrigW, bh = po.colOrigH;
+        const rad = Math.abs(po.tipAngle) * Math.PI / 180;
+        const cosA = Math.cos(rad), sinA = Math.sin(rad);
+        po.currentW = bw * cosA + bh * sinA;
+        po.currentH = bw * sinA + bh * cosA;
+        po.dynamicBody.body.setSize(po.currentW, po.currentH);
+        po.dynamicBody.setDisplaySize(po.currentW, po.currentH);
 
         // Position gfx at body center, rotate around it
         po.visualGfx.x = cx;
@@ -971,18 +984,18 @@ class GameScene extends Phaser.Scene {
 
         // Draw column centered at (0,0) so rotation is correct
         po.visualGfx.clear();
-        const hw = po.def.w / 2, hh = po.def.h / 2;
+        const hw = bw / 2, hh = bh / 2;
         // Glow layers
         for (let i = 3; i >= 1; i--) {
           po.visualGfx.fillStyle(C.LIQUID, 0.04 + i * 0.04);
-          po.visualGfx.fillRect(-hw - i*3, -hh - i*3, po.def.w + i*6, po.def.h + i*6);
+          po.visualGfx.fillRect(-hw - i*3, -hh - i*3, bw + i*6, bh + i*6);
         }
         po.visualGfx.fillStyle(C.LIQUID_D, 0.9);
-        po.visualGfx.fillRect(-hw, -hh, po.def.w, po.def.h);
+        po.visualGfx.fillRect(-hw, -hh, bw, bh);
         po.visualGfx.fillStyle(C.SG_BEAM, 0.5);
-        po.visualGfx.fillRect(-hw, -hh, po.def.w, 4);
+        po.visualGfx.fillRect(-hw, -hh, bw, 4);
         po.visualGfx.lineStyle(OL, C.OUT);
-        po.visualGfx.strokeRect(-hw, -hh, po.def.w, po.def.h);
+        po.visualGfx.strokeRect(-hw, -hh, bw, bh);
       } else {
         // Non-column: spread/flatten viscosity
         if (po.currentW < po.maxW)
