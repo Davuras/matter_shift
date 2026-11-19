@@ -165,6 +165,8 @@ const SFX = {
       case 'death':    this.tone(400, 60, 0.5, 'sawtooth', 0.14); this.noise(0.35, 0.22, 800); break;
       case 'win':      [392, 523, 659, 784, 1047].forEach((f, i) => this.tone(f, 0, 0.2, 'triangle', 0.12, i * 0.08)); break;
       case 'click':    this.tone(800, 600, 0.05, 'square', 0.06); break;
+      case 'grav':     this.tone(140, 420, 0.22, 'sine', 0.13); this.tone(280, 840, 0.18, 'triangle', 0.05, 0.03); this.noise(0.12, 0.06, 1800); break;
+      case 'float':    this.tone(700, 350, 0.3, 'sine', 0.08); this.tone(1050, 520, 0.3, 'sine', 0.04, 0.05); break;
     }
   },
 };
@@ -179,6 +181,7 @@ function refreshLayout() {
   requestAnimationFrame(r); setTimeout(r, 60); setTimeout(r, 300);
 }
 window.addEventListener('orientationchange', refreshLayout);
+function setFreezeLabel(t) { const b = document.getElementById('btn-freeze'); if (b) b.textContent = t; }
 function setInGame(on) { document.body.classList.toggle('ingame', on); refreshLayout(); }
 function setTouchUI(on) { TOUCH_UI = on; document.body.classList.toggle('touch', on); refreshLayout(); }
 setTouchUI(TOUCH_UI);
@@ -600,6 +603,29 @@ class BootScene extends Phaser.Scene {
   }
 }
 
+// Menü-Button: style = 'primary' | 'secondary' | 'grav'
+function menuButton(scene, x, y, label, style, cb) {
+  const S = {
+    primary:   { size: '22px', h: 48, fill: COL.HOT, alpha: 0.75, line: 0xffc27a, text: '#ffffff' },
+    secondary: { size: '16px', h: 38, fill: 0x1a232c, alpha: 0.8, line: 0x56636f, text: '#b9c7d2' },
+    grav:      { size: '18px', h: 42, fill: 0x0a4a66, alpha: 0.8, line: COL.COLD, text: '#bff4ff' },
+  }[style];
+  const txt = scene.add.text(x, y, label, { fontFamily: FONT, fontSize: S.size, fontStyle: 'bold', color: S.text }).setOrigin(0.5).setDepth(2);
+  const w = Math.max(260, txt.width + 60), h = S.h;
+  const g = scene.add.graphics().setDepth(1);
+  const draw = hover => {
+    g.clear();
+    g.fillStyle(S.fill, hover ? 0.95 : S.alpha); rr(g, x - w / 2, y - h / 2, w, h, 8);
+    g.lineStyle(2, S.line, hover ? 1 : 0.7); rr(g, x - w / 2, y - h / 2, w, h, 8, true);
+  };
+  draw(false);
+  const zone = scene.add.zone(x, y, w, h).setInteractive({ useHandCursor: true });
+  zone.on('pointerover', () => draw(true));
+  zone.on('pointerout',  () => draw(false));
+  zone.on('pointerdown', cb);
+  if (style === 'primary') scene.tweens.add({ targets: txt, scale: { from: 1, to: 1.04 }, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MENU
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -643,11 +669,20 @@ class MenuScene extends Phaser.Scene {
       this.cameras.main.fadeOut(250, 0, 0, 0);
       this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('Game', { level: lvl, deaths: 0 }));
     };
+    const gravity = () => {
+      if (this._starting) return;
+      this._starting = true;
+      SFX.resume(); SFX.play('click');
+      this.cameras.main.fadeOut(250, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('GravSelect'));
+    };
     if (best > 1) {
-      this._button(GW / 2, 385, `▶  WEITER  ·  KAMMER ${String(best).padStart(2, '0')}`, true, () => start(best, false));
-      this._button(GW / 2, 440, 'NEUES SPIEL', false, () => start(1, true));
+      menuButton(this, GW / 2, 370, `▶  NORMALE LEVEL  ·  KAMMER ${String(best).padStart(2, '0')}`, 'primary', () => start(best, false));
+      menuButton(this, GW / 2, 418, 'NEUES SPIEL', 'secondary', () => start(1, true));
+      menuButton(this, GW / 2, 466, '◉  GRAVITY LEVEL  ·  TEST', 'grav', gravity);
     } else {
-      this._button(GW / 2, 400, '▶  TEST STARTEN', true, () => start(1, false));
+      menuButton(this, GW / 2, 385, '▶  NORMALE LEVEL', 'primary', () => start(1, false));
+      menuButton(this, GW / 2, 445, '◉  GRAVITY LEVEL  ·  TEST', 'grav', gravity);
     }
 
     const legend = TOUCH_UI
@@ -661,29 +696,8 @@ class MenuScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-SPACE', () => start(best, false));
     this.input.keyboard.on('keydown-ENTER', () => start(best, false));
     this.input.keyboard.on('keydown-N',     () => start(1, true));
+    this.input.keyboard.on('keydown-G',     gravity);
     this.input.keyboard.on('keydown-M',     () => SFX.toggle());
-  }
-
-  _button(x, y, label, primary, cb) {
-    const txt = this.add.text(x, y, label, {
-      fontFamily: FONT, fontSize: primary ? '22px' : '16px', fontStyle: 'bold',
-      color: primary ? '#ffffff' : '#b9c7d2',
-    }).setOrigin(0.5).setDepth(2);
-    const w = Math.max(260, txt.width + 60), h = primary ? 48 : 38;
-    const g = this.add.graphics().setDepth(1);
-    const draw = hover => {
-      g.clear();
-      g.fillStyle(primary ? COL.HOT : 0x1a232c, hover ? 0.95 : (primary ? 0.75 : 0.8));
-      rr(g, x - w / 2, y - h / 2, w, h, 8);
-      g.lineStyle(2, primary ? 0xffc27a : 0x56636f, hover ? 1 : 0.7);
-      rr(g, x - w / 2, y - h / 2, w, h, 8, true);
-    };
-    draw(false);
-    const zone = this.add.zone(x, y, w, h).setInteractive({ useHandCursor: true });
-    zone.on('pointerover', () => draw(true));
-    zone.on('pointerout',  () => draw(false));
-    zone.on('pointerdown', cb);
-    if (primary) this.tweens.add({ targets: txt, scale: { from: 1, to: 1.04 }, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
   }
 
   _logo(cx, cy, r) {
@@ -742,6 +756,7 @@ class GameScene extends Phaser.Scene {
   create() {
     setInGame(true);
     MOBILE.reset = false;
+    setFreezeLabel('❄');
     const L = getLevel(this.levelNum);
     this.L = L;
 
@@ -1562,6 +1577,773 @@ class GameScene extends Phaser.Scene {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GRAVITY — Testumgebung für den Gravitationsanzug
+// Die Welt hat keine Schwerkraft. Der Anzug lenkt die Schwerkraft des Spielers
+// in eine von vier Richtungen oder schaltet sie ab (schwerelos).
+// ═══════════════════════════════════════════════════════════════════════════════
+const GCFG = {
+  GRAVITY: 1100,      // Stärke der Anzug-Schwerkraft
+  MAX_FALL: 760,      // maximale Fallgeschwindigkeit
+  AIR_ACCEL: 2400,    // Luftsteuerung (wie schnell ◀ ▶ in der Luft greifen)
+  SWITCH_CD_MS: 150,  // Mindestabstand zwischen zwei Wechseln
+  FLOAT_ACCEL: 260,   // Steuerung in der Schwerelosigkeit (falls aktiviert)
+  FLOAT_MAX: 200,     // ... Höchstgeschwindigkeit dabei
+  PUSH_OFF: 330,      // Abstoßen von einer Fläche in der Schwerelosigkeit
+  CAM_ROT_SPEED: 6,   // wie schnell die Kamera mitdreht
+  ZOOM: 0.8,          // Kamera-Zoom (kleiner = mehr Überblick)
+};
+
+const GDIR   = { down: { x: 0, y: 1 }, up: { x: 0, y: -1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+const GARROW = { down: '↓', up: '↑', left: '←', right: '→' };
+const P_SIDE = 22, P_LEN = 44;    // Spielerkörper quer / längs zur Schwerkraft
+const snapDir  = (dx, dy) => Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+const dirAngle = d => Math.atan2(GDIR[d].y, GDIR[d].x) - Math.PI / 2;   // Drehung, die "unten" auf d bringt
+const wrapA    = a => Phaser.Math.Angle.Wrap(a);
+
+const gHint = s => s
+  .replace(/\{GRAV\}/g,  TOUCH_UI ? 'Tippe' : 'Pfeiltaste / Klick')
+  .replace(/\{FLOAT\}/g, TOUCH_UI ? '◎ drücken' : 'F / Rechtsklick')
+  .replace(/\{JUMP\}/g,  TOUCH_UI ? '▲' : 'Leertaste')
+  .replace(/\{MOVE\}/g,  TOUCH_UI ? '◀ ▶' : 'A / D');
+
+// ─── Gravity-Level ───────────────────────────────────────────────────────────
+// blocks/hazards: [x, y, w, h]  ·  bounds: [x, y, w, h] — außerhalb = Absturz ins Nichts
+// start/exit: Fußpunkt + Schwerkraftrichtung (g) — exit.g bestimmt, wie der Ausgang steht
+const PT = 28;   // Plattformdicke
+const GLEVELS = [
+  {
+    name: 'DECKE',
+    bounds: [-200, -200, 1600, 1000],
+    blocks: [[250, 72, 600, PT], [300, 470, 650, PT]],
+    start: { x: 400, y: 100, g: 'up' },
+    exit:  { x: 850, y: 470, g: 'down' },
+    hints: {
+      start:  'Du stehst an der Decke  ·  {GRAV} unter dich = Schwerkraft nach unten',
+      switch: 'Schwerkraft umgelenkt — weiter zum AUSGANG',
+    },
+  },
+  {
+    name: 'WAND',
+    bounds: [-200, -250, 1700, 1150],
+    blocks: [[80, 640, 600, PT], [760, 150, 30, 518], [790, 150, 400, PT]],
+    start: { x: 180, y: 640, g: 'down' },
+    exit:  { x: 1100, y: 150, g: 'down' },
+    hints: {
+      start:  'Viel zu hoch zum Springen  ·  {GRAV} rechts von dir = zur Wand fallen',
+      switch: 'Lauf die Wand hoch ({MOVE})  ·  oben wieder nach unten fallen',
+    },
+  },
+  {
+    name: 'SEITWÄRTS',
+    bounds: [-200, -200, 1900, 1100],
+    blocks: [[80, 450, 260, PT], [900, 560, 320, PT]],
+    hazards: [[1450, -200, 60, 1100]],
+    start: { x: 150, y: 450, g: 'down' },
+    exit:  { x: 1120, y: 560, g: 'down' },
+    hints: {
+      start:  'Zu weit zum Springen  ·  seitwärts fallen: {GRAV} rechts von dir',
+      switch: 'Rechtzeitig wieder nach unten — der Schwung bleibt!',
+    },
+  },
+  {
+    name: 'SCHWERELOS',
+    bounds: [-200, -300, 1900, 1200],
+    blocks: [[60, 120, 30, 420], [860, 420, 340, PT]],
+    hazards: [[380, -300, 360, 450], [380, 450, 360, 500], [1400, -300, 60, 1200]],
+    start: { x: 90, y: 300, g: 'left' },
+    exit:  { x: 1110, y: 420, g: 'down' },
+    hints: {
+      start: 'Schwerelos: {FLOAT}  ·  dann mit {JUMP} von der Wand abstoßen',
+      float: 'Du treibst  ·  über der Plattform: {GRAV} nach unten',
+    },
+  },
+  {
+    name: 'SPIELWIESE',
+    bounds: [-300, -300, 2000, 1500],
+    blocks: [
+      [0, 0, 1400, 30], [0, 870, 1400, 30], [0, 30, 30, 840], [1370, 30, 30, 840],
+      [300, 330, 220, 30], [720, 520, 30, 220], [900, 250, 260, 30], [480, 680, 240, 30], [1100, 480, 30, 240],
+    ],
+    start: { x: 150, y: 870, g: 'down' },
+    exit:  { x: 1030, y: 280, g: 'up' },
+    hints: { start: 'Freies Experimentieren  ·  der AUSGANG hängt unter einer Plattform' },
+  },
+];
+
+// ─── Auswahl ─────────────────────────────────────────────────────────────────
+class GravSelectScene extends Phaser.Scene {
+  constructor() { super('GravSelect'); }
+
+  create() {
+    setInGame(false);
+    this._leaving = false;
+    this.cameras.main.fadeIn(300, 0, 0, 0);
+    this.add.image(0, 0, 'bg').setOrigin(0);
+    const ov = this.add.graphics();
+    ov.fillStyle(0x03070c, 0.74); ov.fillRect(0, 0, GW, GH);
+    ov.lineStyle(2, COL.COLD, 0.6);  ov.strokeRect(14, 14, GW - 28, GH - 28);
+    ov.lineStyle(1, COL.COLD, 0.25); ov.strokeRect(20, 20, GW - 40, GH - 40);
+
+    this.add.text(GW / 2, 62, 'GRAVITY LEVEL', { fontFamily: FONT, fontSize: '44px', fontStyle: 'bold', color: '#00c8ff', stroke: '#000', strokeThickness: 7 }).setOrigin(0.5);
+    this.add.text(GW / 2, 104, 'TESTUMGEBUNG  ·  GRAVITATIONSANZUG', { fontFamily: FONT, fontSize: '14px', color: '#a9bccb', letterSpacing: 2 }).setOrigin(0.5);
+
+    const go = (key, data) => {
+      if (this._leaving) return;
+      this._leaving = true;
+      SFX.resume(); SFX.play('click');
+      this.cameras.main.fadeOut(220, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start(key, data));
+    };
+    const play = n => go('Gravity', { level: n, deaths: 0 });
+    GLEVELS.forEach((L, i) => menuButton(this, GW / 2, 162 + i * 50, `G${i + 1}  ·  ${L.name}`, 'grav', () => play(i + 1)));
+    menuButton(this, GW / 2, 425, '←  ZURÜCK', 'secondary', () => go('Menu'));
+
+    const legend = TOUCH_UI
+      ? ['◀ ▶  laufen    ▲  springen / abstoßen    TIPPEN  Schwerkraft in diese Richtung',
+         '◎  schwerelos    ↻  Neustart']
+      : ['A D  laufen    W / ␣  springen / abstoßen    PFEILTASTEN / KLICK  Schwerkraft in diese Richtung',
+         'F / RECHTSKLICK  schwerelos    R  Neustart    C  Kamera    V  Schweben    B  Schwung    ESC  zurück'];
+    legend.forEach((l, i) => this.add.text(GW / 2, 495 + i * 22, l, { fontFamily: FONT, fontSize: '13px', color: '#8ea3b4' }).setOrigin(0.5));
+
+    this.input.keyboard.on('keydown-ESC', () => go('Menu'));
+    this.input.keyboard.on('keydown-ENTER', () => play(1));
+    ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE'].slice(0, GLEVELS.length)
+      .forEach((k, i) => this.input.keyboard.on('keydown-' + k, () => play(i + 1)));
+  }
+}
+
+// ─── Spielszene ──────────────────────────────────────────────────────────────
+class GravityScene extends Phaser.Scene {
+  constructor() { super('Gravity'); }
+
+  init(data) {
+    this.levelNum  = data.level || 1;
+    this.deaths    = data.deaths || 0;
+    this.retry     = !!data.retry;
+    this.levelDone = false;
+    this.dead      = false;
+    this._leaving  = false;
+    this._canContinue = false;
+    this.statics = [];
+    this.hazards = [];
+    this._t = 0; this._levelTime = 0;
+    this.switches  = 0;
+    this._switchCD = 0;
+    this._coyote = 0; this._jumpBuf = 0; this._airJumps = 0;
+    this._jumpHeld = true; this._jumping = false;
+    this._prevFloat = true;
+    this._grounded = false; this._wasGrounded = true; this._lastAlong = 0;
+    this._runT = 0;
+    this._flashDir = null;
+    this.facing = 1;
+    this._hintsShown = {};
+    this.opts = Object.assign({ camRot: true, floatSteer: true, keepMomentum: true }, Store.get('gravOpts', {}));
+  }
+
+  create() {
+    setInGame(true);
+    setFreezeLabel('◎');
+    MOBILE.reset = false;
+    const L = GLEVELS[this.levelNum - 1];
+    this.L = L;
+    this.physics.world.gravity.set(0, 0);   // Welt ohne Schwerkraft — nur der Anzug zieht
+
+    const cam = this.cameras.main;
+    cam.setBackgroundColor('#05070a').setZoom(GCFG.ZOOM);
+
+    this._buildBackdrop(L);
+    this.platGroup = this.physics.add.staticGroup();
+    this._buildBlocks(L);
+    this._buildHazards(L);
+    this._buildExit(L.exit);
+    this._buildFx();
+
+    this.grav = L.start.g;      // aktuelle Schwerkraft (null = schwerelos)
+    this.orient = L.start.g;    // letzte Richtung — bestimmt Ausrichtung von Spieler & Kamera
+    const o = GDIR[this.orient];
+    this.player = this.physics.add.sprite(L.start.x - o.x * P_LEN / 2, L.start.y - o.y * P_LEN / 2, 'px').setVisible(false);
+    this.player.body.setMaxVelocity(3000, 3000);
+    this._applyBodySize(false);
+    this._applyGravity();
+    this.physics.add.collider(this.player, this.platGroup);
+
+    this.dotGfx = this.add.graphics().setDepth(2);
+    this.dots = [];
+    this.visAngle = dirAngle(this.orient);
+    this.pv   = this.add.sprite(0, 0, 'p_idle').setOrigin(0.5, 1).setDepth(20);
+    this.parm = this.add.image(0, 0, 'arm').setOrigin(4 / 36, 0.5).setDepth(21);
+    this.aimGfx = this.add.graphics().setDepth(35);
+
+    cam.startFollow(this.player, true, 0.14, 0.14);
+    cam.setRotation(this.opts.camRot ? -this.visAngle : 0);
+
+    this._setupInput();
+    this.hud = this.scene.get('GravHUD');
+    this.scene.launch('GravHUD', { gs: this });
+    this.events.once('shutdown', () => this.scene.stop('GravHUD'));
+
+    cam.fadeIn(300, 0, 0, 0);
+    this.time.delayedCall(this.retry ? 200 : 1300, () => this._hint('start'));
+  }
+
+  // ── Aufbau ──────────────────────────────────────────────────────────────────
+  _buildBackdrop(L) {
+    const [bx, by, bw, bh] = L.bounds;
+    const g = this.add.graphics().setDepth(0);
+    const rng = new RNG(this.levelNum * 31 + 7);
+    // ferne, schwebende Trümmer
+    for (let i = 0; i < 28; i++) {
+      const w = rng.f(20, 140), h = rng.f(10, 60);
+      const x = bx - 600 + rng.f(0, bw + 1200), y = by - 600 + rng.f(0, bh + 1200);
+      g.fillStyle(0x10161c, rng.f(0.5, 0.9)); g.fillRect(x, y, w, h);
+      g.lineStyle(1, 0x1d2a35, 0.8); g.strokeRect(x, y, w, h);
+    }
+    for (let i = 0; i < 420; i++) {
+      const x = bx - 900 + rng.f(0, bw + 1800), y = by - 900 + rng.f(0, bh + 1800);
+      g.fillStyle(rng.next() < 0.15 ? 0x7fdcff : 0xc8d2dc, rng.f(0.12, 0.55));
+      g.fillCircle(x, y, rng.f(0.6, 1.8));
+    }
+    // Grenze zum Nichts
+    g.lineStyle(2, COL.DANGER, 0.14); g.strokeRect(bx, by, bw, bh);
+  }
+
+  _buildBlocks(L) {
+    const g = this.add.graphics().setDepth(9);
+    L.blocks.forEach(([x, y, w, h]) => {
+      this.statics.push({ x, y, w, h });
+      this.platGroup.create(x + w / 2, y + h / 2, 'px').setVisible(false).setDisplaySize(w, h).refreshBody();
+      g.fillStyle(COL.COLD, 0.06); rr(g, x - 6, y - 6, w + 12, h + 12, 8);
+      g.fillStyle(COL.STEEL); g.fillRect(x, y, w, h);
+      g.fillStyle(COL.STEEL_HI);   // jede Seite ist begehbar → alle Kanten hell
+      g.fillRect(x, y, w, 3); g.fillRect(x, y + h - 3, w, 3); g.fillRect(x, y, 3, h); g.fillRect(x + w - 3, y, 3, h);
+      g.lineStyle(1, 0x10151a, 1);
+      if (w >= h) for (let tx = x + 60; tx < x + w - 10; tx += 60) g.lineBetween(tx, y + 4, tx, y + h - 4);
+      else        for (let ty = y + 60; ty < y + h - 10; ty += 60) g.lineBetween(x + 4, ty, x + w - 4, ty);
+      // Schwebe-Emitter
+      g.fillStyle(COL.COLD, 0.85);
+      const em = w >= h ? [[x + 8, y + h / 2], [x + w - 8, y + h / 2]] : [[x + w / 2, y + 8], [x + w / 2, y + h - 8]];
+      em.forEach(([ex, ey]) => g.fillCircle(ex, ey, 2.5));
+      g.lineStyle(2, OUTLINE, 1); g.strokeRect(x, y, w, h);
+    });
+  }
+
+  _buildHazards(L) {
+    const g = this.add.graphics().setDepth(8);
+    (L.hazards || []).forEach(([x, y, w, h]) => {
+      this.hazards.push({ x, y, w, h });
+      g.fillStyle(COL.DANGER, 0.14); g.fillRect(x, y, w, h);
+      g.lineStyle(1, COL.DANGER, 0.22);
+      for (let ty = y + 10; ty < y + h; ty += 14) g.lineBetween(x, ty, x + w, ty);
+      g.lineStyle(2, COL.DANGER, 0.75); g.strokeRect(x, y, w, h);
+    });
+    this.tweens.add({ targets: g, alpha: { from: 0.65, to: 1 }, duration: 800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+  }
+
+  _buildExit(e) {
+    const a = dirAngle(e.g);
+    const c = this.add.container(e.x, e.y).setDepth(10).setRotation(a);
+    const g = this.add.graphics();
+    g.fillStyle(0x000000, 0.3); g.fillRect(-22, -70, 52, 70);
+    g.fillStyle(0x1d252d); rr(g, -26, -76, 52, 76, 4);
+    g.fillStyle(0x34404b); g.fillRect(-26, -76, 52, 6);
+    g.lineStyle(2, OUTLINE); rr(g, -26, -76, 52, 76, 4, true);
+    g.fillStyle(0x03140c); g.fillRect(-18, -66, 36, 66);
+    const pool = this.add.ellipse(0, 0, 140, 18, COL.EXIT, 0.22).setBlendMode('ADD');
+    this.tweens.add({ targets: pool, alpha: { from: 0.12, to: 0.3 }, duration: 900, yoyo: true, repeat: -1 });
+    const lbl = this.add.text(0, -88, 'AUSGANG', { fontFamily: FONT, fontSize: '11px', fontStyle: 'bold', color: '#00ff88', stroke: '#000', strokeThickness: 3 }).setOrigin(0.5);
+    this.exitField = this.add.graphics();
+    c.add([pool, g, this.exitField, lbl]);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const pts = [[-16, -62], [16, -62], [-16, 0], [16, 0]].map(([lx, ly]) => ({ x: e.x + lx * ca - ly * sa, y: e.y + lx * sa + ly * ca }));
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    this.exitRect = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+  }
+
+  _updateExit() {
+    const g = this.exitField, t = this._t;
+    g.clear();
+    g.fillStyle(COL.EXIT, 0.22 + 0.06 * Math.sin(t * 3)); g.fillRect(-18, -66, 36, 66);
+    for (let i = 0; i < 4; i++) { g.fillStyle(0x9dffd0, 0.45); g.fillRect(-18, -((t * 38 + i * 16.5) % 66), 36, 2); }
+    const o = Math.sin(t * 4) * 2;
+    g.fillStyle(0xeafff4, 0.9); g.fillTriangle(-7 + o, -44, -7 + o, -22, 9 + o, -33);
+    g.lineStyle(2, COL.EXIT, 0.9); g.strokeRect(-18, -66, 36, 66);
+  }
+
+  _buildFx() {
+    const P = (tex, cfg, depth) => this.add.particles(0, 0, tex, Object.assign({ emitting: false }, cfg)).setDepth(depth);
+    this.fx = {
+      dust:  P('dot', { lifespan: { min: 250, max: 450 }, speed: { min: 20, max: 90 }, scale: { start: 0.8, end: 0 }, alpha: { start: 0.5, end: 0 }, tint: 0xc8ccc8 }, 19),
+      spark: P('dot', { lifespan: { min: 300, max: 700 }, speed: { min: 80, max: 280 }, scale: { start: 0.6, end: 0 }, tint: [0x7fdcff, 0xffffff, 0x00c8ff], blendMode: 'ADD' }, 31),
+      burst: P('sq',  { lifespan: { min: 600, max: 1200 }, speed: { min: 60, max: 300 }, scale: { start: 1.6, end: 0 }, tint: [0xffffff, 0xff6600, 0x00c8ff, 0xe6edf3] }, 31),
+    };
+  }
+
+  _ring(x, y, color) {
+    const r = this.add.circle(x, y, 6).setStrokeStyle(2, color, 0.9).setDepth(19);
+    this.tweens.add({ targets: r, scale: 3.2, alpha: 0, duration: 280, onComplete: () => r.destroy() });
+  }
+
+  // ── Eingabe ─────────────────────────────────────────────────────────────────
+  _setupInput() {
+    const K = Phaser.Input.Keyboard.KeyCodes;
+    this.keys = this.input.keyboard.addKeys({
+      a: K.A, d: K.D, w: K.W, space: K.SPACE, f: K.F, q: K.Q, up: K.UP, down: K.DOWN, left: K.LEFT, right: K.RIGHT,
+    });
+    this.input.mouse?.disableContextMenu();
+
+    this.input.on('pointerdown', ptr => {
+      if (this.levelDone) { if (this._canContinue) this._next(); return; }
+      if (this.dead || ptr.y < 52 || ptr.y > GH - 40) return;     // HUD-Leisten
+      if (!ptr.wasTouch && ptr.rightButtonDown()) { this._setGrav(null); return; }
+      const w = this.cameras.main.getWorldPoint(ptr.x, ptr.y), c = this.player.body.center;
+      const dx = w.x - c.x, dy = w.y - c.y;
+      if (Math.hypot(dx, dy) > 6) this._setGrav(snapDir(dx, dy));
+    });
+    const arrow = (sx, sy) => () => { if (!this.dead && !this.levelDone) this._setGrav(this._screenDir(sx, sy)); };
+    this.input.keyboard.on('keydown-UP',    arrow(0, -1));
+    this.input.keyboard.on('keydown-DOWN',  arrow(0, 1));
+    this.input.keyboard.on('keydown-LEFT',  arrow(-1, 0));
+    this.input.keyboard.on('keydown-RIGHT', arrow(1, 0));
+    this.input.keyboard.on('keydown-R', () => { if (!this.levelDone) this._restart(false); });
+    this.input.keyboard.on('keydown-M', () => SFX.toggle());
+    this.input.keyboard.on('keydown-C', () => this.toggleOpt('camRot'));
+    this.input.keyboard.on('keydown-V', () => this.toggleOpt('floatSteer'));
+    this.input.keyboard.on('keydown-B', () => this.toggleOpt('keepMomentum'));
+    const cont = () => { if (this.levelDone && this._canContinue) this._next(); };
+    this.input.keyboard.on('keydown-SPACE', cont);
+    this.input.keyboard.on('keydown-ENTER', cont);
+    this.input.keyboard.on('keydown-ESC', () => this.leave());
+  }
+
+  // Bildschirmrichtung → Weltrichtung (berücksichtigt die Kameradrehung)
+  _screenDir(sx, sy) {
+    const cam = this.cameras.main;
+    const a = cam.getWorldPoint(GW / 2, GH / 2), b = cam.getWorldPoint(GW / 2 + sx * 100, GH / 2 + sy * 100);
+    return snapDir(b.x - a.x, b.y - a.y);
+  }
+
+  toggleOpt(key) {
+    this.opts[key] = !this.opts[key];
+    Store.set('gravOpts', this.opts);
+    SFX.resume(); SFX.play('click');
+  }
+
+  leave() {
+    if (this._leaving) return;
+    this._leaving = true;
+    this.cameras.main.fadeOut(200, 0, 0, 0);
+    this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('GravSelect'));
+  }
+
+  _restart(died) {
+    this.scene.restart({ level: this.levelNum, deaths: this.deaths, retry: died || this.retry });
+  }
+
+  // ── Anzug ───────────────────────────────────────────────────────────────────
+  _setGrav(name) {
+    if (!this.player || !this.player.body) return;
+    if (this.dead || this.levelDone || this._switchCD > 0 || name === this.grav) return;
+    this._switchCD = GCFG.SWITCH_CD_MS / 1000;
+    this.grav = name;
+    this.switches++;
+    const b = this.player.body;
+    if (name) {
+      if (this.orient !== name) { this.orient = name; this._applyBodySize(true); }
+      if (!this.opts.keepMomentum) b.setVelocity(0, 0);
+      this._airJumps = 0; this._coyote = 0;
+      SFX.play('grav');
+      this._ring(b.center.x, b.center.y, COL.COLD);
+      this._hint('switch');
+    } else {
+      SFX.play('float');
+      this._ring(b.center.x, b.center.y, 0xffffff);
+      this._hint('float');
+    }
+    this._flashDir = { d: name, t: this._t };
+    this._applyGravity();
+  }
+
+  _applyGravity() {
+    const g = this.grav ? GDIR[this.grav] : { x: 0, y: 0 };
+    this.player.body.setAllowGravity(true).setGravity(g.x * GCFG.GRAVITY, g.y * GCFG.GRAVITY);
+  }
+
+  // Körper längs zur Schwerkraft ausrichten; danach aus Wänden herausschieben
+  _applyBodySize(resolve) {
+    const b = this.player.body, o = GDIR[this.orient];
+    const w = o.x ? P_LEN : P_SIDE, h = o.x ? P_SIDE : P_LEN;
+    b.setSize(w, h, true);
+    if (!resolve) return;
+    let cx = this.player.x, cy = this.player.y;
+    for (let i = 0; i < 4; i++) {
+      const box = { x: cx - w / 2, y: cy - h / 2, w, h };
+      const r = this.statics.find(s => rectsOverlap(box, s, -0.5));
+      if (!r) break;
+      const pl = box.x + w - r.x, pr = r.x + r.w - box.x, pu = box.y + h - r.y, pd = r.y + r.h - box.y;
+      const m = Math.min(pl, pr, pu, pd);
+      if (m === pl) cx -= pl; else if (m === pr) cx += pr; else if (m === pu) cy -= pu; else cy += pd;
+    }
+    const vx = b.velocity.x, vy = b.velocity.y;
+    b.reset(cx, cy);
+    b.setVelocity(vx, vy);
+  }
+
+  // Normale der Flächen, die der Spieler gerade berührt (auch ohne Schwerkraft)
+  _contactNormal() {
+    const b = this.player.body, E = 2.5;
+    let nx = 0, ny = 0;
+    this.statics.forEach(r => {
+      const ovX = b.right > r.x + 1 && b.x < r.x + r.w - 1;
+      const ovY = b.bottom > r.y + 1 && b.y < r.y + r.h - 1;
+      if (ovX && Math.abs(b.bottom - r.y) <= E) ny -= 1;
+      if (ovX && Math.abs(b.y - (r.y + r.h)) <= E) ny += 1;
+      if (ovY && Math.abs(b.right - r.x) <= E) nx -= 1;
+      if (ovY && Math.abs(b.x - (r.x + r.w)) <= E) nx += 1;
+    });
+    return { x: Math.sign(nx), y: Math.sign(ny) };
+  }
+
+  // "Rechts" aus Sicht des Spielers (bei fester Kamera: bildschirm-rechts bzw. oben)
+  _sideVec() {
+    const o = GDIR[this.orient];
+    let r = { x: o.y, y: -o.x };
+    if (!this.opts.camRot && (r.x < 0 || (r.x === 0 && r.y > 0))) r = { x: -r.x, y: -r.y };
+    return r;
+  }
+
+  _move(dt) {
+    const k = this.keys, b = this.player.body;
+    const left  = k.a.isDown || MOBILE.left;
+    const right = k.d.isDown || MOBILE.right;
+    const jump  = k.w.isDown || k.space.isDown || MOBILE.jump;
+    const side  = (right ? 1 : 0) - (left ? 1 : 0);
+    const pressed = jump && !this._jumpHeld;
+    this._jumpHeld = jump;
+    if (side) this.facing = side;
+    const r = this._sideVec(), n = this._contactNormal();
+
+    if (!this.grav) {   // ── schwerelos: treiben, von Flächen abstoßen
+      this._grounded = false;
+      let vx = b.velocity.x, vy = b.velocity.y;
+      if (pressed && (n.x || n.y)) {
+        vx = n.x * GCFG.PUSH_OFF; vy = n.y * GCFG.PUSH_OFF;
+        if (this.opts.floatSteer && side) { vx += r.x * side * 140; vy += r.y * side * 140; }
+        this._ring(b.center.x, b.center.y, 0xffffff);
+        SFX.play('jump');
+      } else if (this.opts.floatSteer && side) {
+        const cur = vx * r.x + vy * r.y;
+        if (Math.sign(cur) !== side || Math.abs(cur) < GCFG.FLOAT_MAX) {
+          vx += r.x * side * GCFG.FLOAT_ACCEL * dt; vy += r.y * side * GCFG.FLOAT_ACCEL * dt;
+        }
+      }
+      b.setVelocity(vx, vy);
+      this._wasGrounded = false;
+      return;
+    }
+
+    const g = GDIR[this.grav];
+    const grounded = b.blocked[this.grav] || (n.x * g.x + n.y * g.y < 0);
+    this._grounded = grounded;
+    let along = b.velocity.x * g.x + b.velocity.y * g.y;
+    let cur   = b.velocity.x * r.x + b.velocity.y * r.y;
+
+    // seitlich: am Boden direkt, in der Luft mit Schwung
+    const target = side * CFG.SPEED;
+    if (grounded) cur = target;
+    else if (side) { if (Math.sign(cur) !== side || Math.abs(cur) < CFG.SPEED) cur = Phaser.Math.Linear(cur, target, Math.min(1, GCFG.AIR_ACCEL * dt / Math.max(1, Math.abs(target - cur)))); }
+    else if (!this.opts.keepMomentum) cur = 0;
+
+    if (grounded) { this._coyote = CFG.COYOTE_MS / 1000; this._airJumps = 1; }
+    else this._coyote -= dt;
+    if (pressed) this._jumpBuf = CFG.JUMP_BUFFER_MS / 1000; else this._jumpBuf -= dt;
+
+    if (this._jumpBuf > 0) {
+      if (this._coyote > 0) {
+        along = CFG.JUMP;
+        this._coyote = 0; this._jumpBuf = 0; this._jumping = true;
+        this.fx.dust.explode(6, b.center.x + g.x * P_LEN / 2, b.center.y + g.y * P_LEN / 2);
+        SFX.play('jump');
+      } else if (pressed && this._airJumps > 0) {
+        along = CFG.JUMP * CFG.DJUMP;
+        this._airJumps--; this._jumpBuf = 0; this._jumping = true;
+        this._ring(b.center.x + g.x * P_LEN / 2, b.center.y + g.y * P_LEN / 2, 0xffffff);
+        SFX.play('djump');
+      }
+    }
+    if (this._jumping && !jump && along < 0) { along *= CFG.JUMP_CUT; this._jumping = false; }
+    if (along >= 0) this._jumping = false;
+    along = Math.min(along, GCFG.MAX_FALL);
+
+    b.setVelocity(r.x * cur + g.x * along, r.y * cur + g.y * along);
+
+    if (grounded && !this._wasGrounded && this._lastAlong > 250) {
+      const k2 = Math.min(1, this._lastAlong / 760);
+      this.fx.dust.explode(4 + Math.floor(k2 * 8), b.center.x + g.x * P_LEN / 2, b.center.y + g.y * P_LEN / 2);
+      if (k2 > 0.7) this.cameras.main.shake(90, 0.003);
+      SFX.play('land');
+    }
+    this._wasGrounded = grounded;
+    this._lastAlong = along;
+  }
+
+  _checks() {
+    const b = this.player.body, box = { x: b.x, y: b.y, w: b.width, h: b.height };
+    if (rectsOverlap(box, this.exitRect)) return this._win();
+    if (this.hazards.some(h => rectsOverlap(box, h))) return this._die();
+    const [bx, by, bw, bh] = this.L.bounds, c = b.center;
+    if (c.x < bx || c.x > bx + bw || c.y < by || c.y > by + bh) this._die();
+  }
+
+  // ── Darstellung ─────────────────────────────────────────────────────────────
+  _updateVisual(dt) {
+    const b = this.player.body, cam = this.cameras.main;
+    const target = dirAngle(this.orient);
+    this.visAngle += wrapA(target - this.visAngle) * Math.min(1, dt * 12);
+    const camT = this.opts.camRot ? -target : 0;
+    cam.setRotation(cam.rotation + wrapA(camT - cam.rotation) * Math.min(1, dt * GCFG.CAM_ROT_SPEED));
+
+    const a = this.visAngle, ca = Math.cos(a), sa = Math.sin(a);
+    const fx = b.center.x - sa * P_LEN / 2, fy = b.center.y + ca * P_LEN / 2;   // Füße
+    const loc = (lx, ly) => ({ x: fx + lx * ca - ly * sa, y: fy + lx * sa + ly * ca });
+
+    const r = this._sideVec();
+    const sideV = b.velocity.x * r.x + b.velocity.y * r.y;
+    let frame = 'p_idle', bob = 0;
+    if (!this.grav) frame = 'p_jump';
+    else if (!this._grounded) {
+      const g = GDIR[this.grav];
+      frame = b.velocity.x * g.x + b.velocity.y * g.y < 0 ? 'p_jump' : 'p_fall';
+    } else if (Math.abs(sideV) > 1) {
+      this._runT += dt * 11;
+      frame = Math.floor(this._runT) % 2 ? 'p_run1' : 'p_run2';
+      bob = Math.floor(this._runT) % 2 ? -1 : 0;
+    }
+    const p = loc(0, bob);
+    this.pv.setTexture(frame).setPosition(p.x, p.y).setRotation(a).setFlipX(this.facing < 0);
+    const ap = loc(-this.facing, -27 + bob), aim = this.facing > 0 ? 1.2 : Math.PI - 1.2;
+    this.parm.setPosition(ap.x, ap.y).setRotation(aim + a).setFlipY(Math.cos(aim) < 0);
+  }
+
+  // Schwebende Partikel zeigen, wohin die Schwerkraft gerade zieht
+  _updateDots(dt) {
+    const mid = this.cameras.main.midPoint;
+    const g = this.grav ? GDIR[this.grav] : null;
+    while (this.dots.length < 70) {
+      this.dots.push({ x: mid.x + Phaser.Math.FloatBetween(-900, 900), y: mid.y + Phaser.Math.FloatBetween(-900, 900),
+        life: Phaser.Math.FloatBetween(0.6, 2.6), s: Phaser.Math.FloatBetween(0.6, 1.4) });
+    }
+    const gfx = this.dotGfx.clear();
+    this.dots = this.dots.filter(d => {
+      d.life -= dt;
+      const vx = g ? g.x * 150 * d.s : Math.sin(this._t + d.s * 9) * 12;
+      const vy = g ? g.y * 150 * d.s : Math.cos(this._t + d.s * 7) * 12;
+      d.x += vx * dt; d.y += vy * dt;
+      gfx.lineStyle(1.5, g ? 0x7fdcff : 0xffffff, Math.min(1, d.life) * 0.3);
+      gfx.lineBetween(d.x, d.y, d.x - vx * 0.09 - 0.5, d.y - vy * 0.09);
+      return d.life > 0;
+    });
+  }
+
+  _drawArrow(g, x, y, d, col, al) {
+    const v = GDIR[d], s = 34, L = 74, px = -v.y, py = v.x;
+    g.lineStyle(3, col, al); g.lineBetween(x + v.x * s, y + v.y * s, x + v.x * L, y + v.y * L);
+    g.fillStyle(col, al);
+    g.fillTriangle(x + v.x * (L + 14), y + v.y * (L + 14), x + v.x * L + px * 9, y + v.y * L + py * 9, x + v.x * L - px * 9, y + v.y * L - py * 9);
+  }
+
+  _updateAim() {
+    const g = this.aimGfx.clear();
+    if (this.dead || this.levelDone) return;
+    const c = this.player.body.center;
+    const f = this._flashDir;
+    if (f && this._t - f.t < 0.5) {
+      const al = 1 - (this._t - f.t) / 0.5;
+      if (f.d) this._drawArrow(g, c.x, c.y, f.d, COL.COLD, al);
+      else { g.lineStyle(2, 0xffffff, al); g.strokeCircle(c.x, c.y, 40 + (1 - al) * 20); }
+    }
+    if (TOUCH_UI) return;
+    const p = this.input.activePointer;
+    if (p.y < 52 || p.y > GH - 40) return;
+    const w = this.cameras.main.getWorldPoint(p.x, p.y);
+    const d = snapDir(w.x - c.x, w.y - c.y);
+    if (d !== this.grav) this._drawArrow(g, c.x, c.y, d, 0x7fdcff, 0.35);
+  }
+
+  _hint(key) {
+    const msg = this.L.hints[key];
+    if (!msg || this._hintsShown[key]) return;
+    this._hintsShown[key] = true;
+    if (this.hud && this.hud.ready) this.hud.showHint(gHint(msg));
+  }
+
+  // ── Ende ────────────────────────────────────────────────────────────────────
+  _die() {
+    if (this.dead || this.levelDone) return;
+    this.dead = true;
+    this.deaths++;
+    const b = this.player.body, x = b.center.x, y = b.center.y;
+    b.stop(); b.enable = false;
+    this.pv.setVisible(false); this.parm.setVisible(false);
+    this.fx.burst.explode(30, x, y);
+    this.fx.spark.explode(20, x, y);
+    this.cameras.main.shake(220, 0.008);
+    if (this.hud && this.hud.ready) this.hud.flash(COL.DANGER);
+    SFX.play('death');
+    this.time.delayedCall(750, () => {
+      this.cameras.main.fadeOut(180, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => this._restart(true));
+    });
+  }
+
+  _win() {
+    if (this.levelDone || this.dead) return;
+    this.levelDone = true;
+    const b = this.player.body;
+    b.stop(); b.enable = false;
+    this.tweens.add({ targets: [this.pv, this.parm], alpha: 0, duration: 380 });
+    this.fx.spark.explode(30, b.center.x, b.center.y);
+    SFX.play('win');
+    this.time.delayedCall(350, () => { if (this.hud && this.hud.ready) this.hud.showWin(this.levelNum >= GLEVELS.length); });
+    this.time.delayedCall(800, () => { this._canContinue = true; });
+    this.time.delayedCall(4000, () => this._next());
+  }
+
+  _next() {
+    if (this._leaving) return;
+    this._leaving = true;
+    const cam = this.cameras.main;
+    cam.fadeOut(260, 0, 0, 0);
+    cam.once('camerafadeoutcomplete', () => {
+      if (this.levelNum >= GLEVELS.length) this.scene.start('GravSelect');
+      else this.scene.start('Gravity', { level: this.levelNum + 1, deaths: this.deaths });
+    });
+  }
+
+  update(time, delta) {
+    const dt = Math.min(delta, 50) / 1000;
+    this._t += dt;
+    this._switchCD -= dt;
+    if (MOBILE.reset) { MOBILE.reset = false; if (!this.levelDone) { this._restart(false); return; } }
+
+    this._updateExit();
+    this._updateDots(dt);
+    if (!this.dead && !this.levelDone) {
+      this._levelTime += dt;
+      const fl = this.keys.f.isDown || this.keys.q.isDown || MOBILE.freeze;
+      if (fl && !this._prevFloat) this._setGrav(null);
+      this._prevFloat = fl;
+      this._move(dt);
+      this._checks();
+    }
+    if (!this.dead) this._updateVisual(dt);
+    this._updateAim();
+  }
+}
+
+// ─── HUD (eigene Szene, damit es sich nicht mit der Kamera dreht) ─────────────
+class GravHUDScene extends Phaser.Scene {
+  constructor() { super('GravHUD'); }
+
+  init(data) { this.gs = data.gs; this.ready = false; }
+
+  create() {
+    const gs = this.gs;
+    const g = this.add.graphics().setDepth(50);
+    g.fillStyle(0x0b1016, 0.88); rr(g, 28, 8, GW - 56, 39, 6);
+    g.lineStyle(1, COL.COLD, 0.4); rr(g, 28, 8, GW - 56, 39, 6, true);
+    const T = (x, y, s, size, color, ox = 0) => this.add.text(x, y, s, { fontFamily: FONT, fontSize: size, color, fontStyle: 'bold' }).setOrigin(ox, 0.5).setDepth(52);
+
+    const menu = T(44, 27, '◀ MENÜ', '12px', '#7f93a4').setInteractive({ useHandCursor: true });
+    menu.on('pointerdown', () => gs.leave());
+    T(126, 27, 'G' + gs.levelNum, '22px', '#00c8ff');
+    T(166, 27, gs.L.name, '13px', '#c3d0db');
+    this.tDeaths = T(350, 27, '', '13px', '#c3d0db');
+    this.tTime   = T(460, 27, '', '13px', '#c3d0db');
+    this.tSwitch = T(590, 27, '', '13px', '#c3d0db');
+    this.gIcon   = this.add.graphics().setDepth(52);
+    this.tGrav   = T(800, 27, '', '13px', '#7fe3ff');
+    this.tSound  = T(GW - 56, 27, '', '16px', '#c3d0db', 0.5).setInteractive({ useHandCursor: true });
+    this.tSound.on('pointerdown', () => SFX.toggle());
+
+    // Experimentier-Schalter (unten)
+    const bar = this.add.graphics().setDepth(50);
+    bar.fillStyle(0x0b1016, 0.8); rr(bar, 60, GH - 34, GW - 120, 28, 6);
+    this.toggles = [
+      { key: 'camRot',       k: 'C', x: GW / 2 - 360, label: v => `KAMERA: ${v ? 'DREHT MIT' : 'FEST'}` },
+      { key: 'floatSteer',   k: 'V', x: GW / 2,       label: v => `SCHWEBEN: ${v ? 'STEUERBAR' : 'NUR TREIBEN'}` },
+      { key: 'keepMomentum', k: 'B', x: GW / 2 + 360, label: v => `SCHWUNG: ${v ? 'BEHALTEN' : 'STOPPT'}` },
+    ].map(t => {
+      t.txt = T(t.x, GH - 20, '', '12px', '#9fb4c4', 0.5).setInteractive({ useHandCursor: true });
+      t.txt.on('pointerdown', () => gs.toggleOpt(t.key));
+      return t;
+    });
+
+    this.hintTxt = this.add.text(GW / 2, 84, '', {
+      fontFamily: FONT, fontSize: '15px', color: '#bff4ff', backgroundColor: 'rgba(8,12,18,0.86)', padding: { x: 14, y: 7 },
+    }).setOrigin(0.5).setDepth(55).setAlpha(0);
+
+    if (!gs.retry) {
+      const a = T(GW / 2, 210, `GRAVITY  G${gs.levelNum}`, '46px', '#00c8ff', 0.5).setStroke('#000', 7).setDepth(56);
+      const b = T(GW / 2, 254, gs.L.name, '18px', '#c3d0db', 0.5).setStroke('#000', 4).setDepth(56);
+      this.tweens.add({ targets: [a, b], alpha: 0, y: '-=12', delay: 1100, duration: 450, onComplete: () => { a.destroy(); b.destroy(); } });
+    }
+    this.ready = true;
+  }
+
+  showHint(msg) {
+    this.tweens.killTweensOf(this.hintTxt);
+    this.hintTxt.setText(msg).setAlpha(0);
+    this.tweens.add({ targets: this.hintTxt, alpha: 1, duration: 200 });
+    this.tweens.add({ targets: this.hintTxt, alpha: 0, delay: 6000, duration: 500 });
+  }
+
+  flash(color) {
+    const f = this.add.rectangle(GW / 2, GH / 2, GW, GH, color, 0.35).setDepth(45);
+    this.tweens.add({ targets: f, alpha: 0, duration: 450, onComplete: () => f.destroy() });
+  }
+
+  showWin(last) {
+    const gs = this.gs;
+    const ov = this.add.graphics().setDepth(60).setAlpha(0);
+    ov.fillStyle(0x000000, 0.72); ov.fillRect(0, 0, GW, GH);
+    ov.fillStyle(0x0b1016, 0.95); rr(ov, GW / 2 - 260, GH / 2 - 105, 520, 210, 10);
+    ov.lineStyle(3, COL.COLD); rr(ov, GW / 2 - 260, GH / 2 - 105, 520, 210, 10, true);
+    const txt = [
+      this.add.text(GW / 2, GH / 2 - 52, 'TEST BESTANDEN', { fontFamily: FONT, fontSize: '50px', fontStyle: 'bold', color: '#00ff88', stroke: '#000', strokeThickness: 7 }),
+      this.add.text(GW / 2, GH / 2 + 4, `GRAVITY G${gs.levelNum}  ·  ${gs.L.name}`, { fontFamily: FONT, fontSize: '18px', color: '#00c8ff' }),
+      this.add.text(GW / 2, GH / 2 + 36, `ZEIT ${gs._levelTime.toFixed(1)}s   ·   WECHSEL ${gs.switches}   ·   TODE ${gs.deaths}`, { fontFamily: FONT, fontSize: '14px', color: '#c3d0db' }),
+      this.add.text(GW / 2, GH / 2 + 74, (TOUCH_UI ? '[ TIPPEN → ' : '[ KLICK / LEERTASTE → ') + (last ? 'ZUR AUSWAHL ]' : 'WEITER ]'), { fontFamily: FONT, fontSize: '13px', color: '#7f93a4' }),
+    ];
+    txt.forEach(t => t.setOrigin(0.5).setDepth(61).setAlpha(0));
+    this.tweens.add({ targets: [ov, ...txt], alpha: 1, duration: 250 });
+    this.tweens.add({ targets: txt[3], alpha: { from: 1, to: 0.3 }, delay: 300, duration: 600, yoyo: true, repeat: -1 });
+  }
+
+  update() {
+    const gs = this.gs;
+    if (!gs || !gs.player) return;
+    this.tDeaths.setText(`TODE ${gs.deaths}`);
+    this.tTime.setText(`ZEIT ${gs._levelTime.toFixed(1)}s`);
+    this.tSwitch.setText(`WECHSEL ${gs.switches}`);
+    this.tSound.setText(SFX.muted ? '🔇' : '🔊');
+    const g = this.gIcon.clear(), cx = 782, cy = 27;
+    g.fillStyle(0x0a2a3a, 1); g.fillCircle(cx, cy, 10);
+    g.lineStyle(2, COL.COLD, 0.9); g.strokeCircle(cx, cy, 10);
+    if (gs.grav) {
+      const v = GDIR[gs.grav];
+      g.lineStyle(2, 0xffffff, 1); g.lineBetween(cx - v.x * 5, cy - v.y * 5, cx + v.x * 5, cy + v.y * 5);
+      g.fillStyle(0xffffff, 1);
+      g.fillTriangle(cx + v.x * 8, cy + v.y * 8, cx + v.x * 3 - v.y * 4, cy + v.y * 3 + v.x * 4, cx + v.x * 3 + v.y * 4, cy + v.y * 3 - v.x * 4);
+      this.tGrav.setText(`SCHWERKRAFT ${GARROW[gs.grav]}`).setColor('#7fe3ff');
+    } else {
+      g.fillStyle(0xffffff, 0.9); g.fillCircle(cx, cy, 3);
+      this.tGrav.setText('◎ SCHWERELOS').setColor('#ffffff');
+    }
+    this.toggles.forEach(t => t.txt.setText((TOUCH_UI ? '' : `[${t.k}] `) + t.label(gs.opts[t.key])).setColor(gs.opts[t.key] ? '#bff4ff' : '#7f93a4'));
+  }
+}
+
 // ─── Start ───────────────────────────────────────────────────────────────────
 window.__game = new Phaser.Game({
   type: Phaser.AUTO,
@@ -1573,7 +2355,7 @@ window.__game = new Phaser.Game({
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: GW, height: GH },
   input: { activePointers: 4 },
   audio: { noAudio: true },
-  scene: [BootScene, MenuScene, GameScene],
+  scene: [BootScene, MenuScene, GameScene, GravSelectScene, GravityScene, GravHUDScene],
 });
 </script>
 </body>
