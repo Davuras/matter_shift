@@ -716,6 +716,7 @@ class GameScene extends Phaser.Scene {
     this.hasGun    = data.hasGun !== undefined ? data.hasGun : this.levelNum > 1;
     this.levelDone = false;
     this.dead      = false;
+    this._leaving  = false;   // Szene-Instanz wird wiederverwendet → sonst blockiert "weiter" ab Level 2
     this.platObjects = [];
     this.statics     = [];
     this.pits        = [];
