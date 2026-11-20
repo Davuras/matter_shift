@@ -19,10 +19,8 @@
     }
     #game-wrap { position: fixed; inset: 0; display: flex; justify-content: center; align-items: center; }
     #phaser-container { width: 100%; height: 100%; }
-    /* Touch: Spielfeld nutzt die volle Bildschirmhöhe (nur Notch-Ränder frei),
-       die halbtransparenten Buttons liegen darüber. Feste 140px-Seitenleisten
-       schrumpften die 2:1-Fläche auf Handys im Querformat auf ~60 %. */
-    body.touch.ingame #game-wrap { left: env(safe-area-inset-left); right: env(safe-area-inset-right); }
+    /* Touch: Spielfeld ingame genauso groß wie im Menü (volle Fläche),
+       die halbtransparenten Buttons liegen darüber. */
     canvas { display: block; }
 
     /* ── Touch controls (nur bei Touch-Bedienung sichtbar) ───────────── */
@@ -42,8 +40,13 @@
       transition: background 60ms, transform 60ms;
     }
     .btn.on { background: rgba(255, 255, 255, 0.28); transform: scale(0.94); }
-    #btn-left   { left:  calc(10px + env(safe-area-inset-left));  bottom: calc(14px + env(safe-area-inset-bottom)); width: 58px; height: 72px; }
-    #btn-right  { left:  calc(74px + env(safe-area-inset-left));  bottom: calc(14px + env(safe-area-inset-bottom)); width: 58px; height: 72px; }
+    /* Joystick: erscheint dort, wo man in die linke Bildschirmhälfte tippt */
+    #stick-zone { display: none; position: fixed; left: 0; top: 16%; bottom: 0; width: 45%; z-index: 9; touch-action: none; }
+    body.touch.ingame #stick-zone { display: block; }
+    #stick-base, #stick-knob { position: fixed; display: none; pointer-events: none; border-radius: 50%; z-index: 9; transform: translate(-50%, -50%); }
+    #stick-base { width: 112px; height: 112px; border: 2px solid rgba(255, 255, 255, 0.28); background: rgba(10, 16, 22, 0.22); }
+    #stick-knob { width: 50px; height: 50px; border: 2px solid rgba(255, 255, 255, 0.55); background: rgba(255, 255, 255, 0.22); }
+    #stick-knob.on { background: rgba(255, 255, 255, 0.4); }
     #btn-jump   { right: calc(10px + env(safe-area-inset-right)); bottom: calc(14px + env(safe-area-inset-bottom)); width: 120px; height: 84px; border-radius: 42px; }
     #btn-freeze { right: calc(30px + env(safe-area-inset-right)); bottom: calc(112px + env(safe-area-inset-bottom)); width: 80px; height: 64px; border-radius: 32px;
                   border-color: rgba(0, 200, 255, 0.8); color: #7fe3ff; background: rgba(0, 120, 255, 0.18); }
@@ -63,12 +66,11 @@
 <div id="game-wrap"><div id="phaser-container"></div></div>
 
 <div id="ctrl">
-  <div class="btn" id="btn-left"   data-key="left">◀</div>
-  <div class="btn" id="btn-right"  data-key="right">▶</div>
   <div class="btn" id="btn-freeze" data-key="freeze">❄</div>
   <div class="btn" id="btn-jump"   data-key="jump">▲</div>
 </div>
 <div class="btn" id="btn-reset">↻</div>
+<div id="stick-zone"></div><div id="stick-base"></div><div id="stick-knob"></div>
 <div id="rotate">GERÄT DREHEN ↻<br><br>Matter Shift wird im Querformat gespielt.</div>
 
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
@@ -184,7 +186,7 @@ function refreshLayout() {
 }
 window.addEventListener('orientationchange', refreshLayout);
 function setFreezeLabel(t) { const b = document.getElementById('btn-freeze'); if (b) b.textContent = t; }
-function setInGame(on) { document.body.classList.toggle('ingame', on); refreshLayout(); }
+function setInGame(on) { document.body.classList.toggle('ingame', on); if (!on) stickEnd(); refreshLayout(); }
 function setTouchUI(on) { TOUCH_UI = on; document.body.classList.toggle('touch', on); refreshLayout(); }
 setTouchUI(TOUCH_UI);
 window.addEventListener('touchstart', () => { if (!TOUCH_UI) setTouchUI(true); }, { passive: true, capture: true });
@@ -200,8 +202,11 @@ function keyAtPoint(x, y) {
   const b = el && el.closest ? el.closest('#ctrl [data-key]') : null;
   return b ? b.dataset.key : null;
 }
+const STICK = { id: null, dir: 0 };
 function syncTouch() {
   const act = new Set(touchKeys.values());
+  if (STICK.dir < 0) act.add('left');
+  if (STICK.dir > 0) act.add('right');
   ['left', 'right', 'jump', 'freeze'].forEach(k => {
     MOBILE[k] = act.has(k);
     const el = document.querySelector(`#ctrl [data-key="${k}"]`);
@@ -221,7 +226,64 @@ const ctrlEl = document.getElementById('ctrl');
 const resetEl = document.getElementById('btn-reset');
 resetEl.addEventListener('touchstart', e => { e.preventDefault(); MOBILE.reset = true; }, { passive: false });
 resetEl.addEventListener('click', () => { MOBILE.reset = true; });
-window.addEventListener('blur', () => { touchKeys.clear(); syncTouch(); });
+
+// ─── Joystick (links) ────────────────────────────────────────────────────────
+// Erscheint am Berührungspunkt, steuert ◀ ▶. Ein kurzer Tipp ohne Ziehen wird
+// ans Spiel weitergereicht (State Gun schießen / Schwerkraft setzen / Weiter).
+const stickZone = document.getElementById('stick-zone');
+const stickBase = document.getElementById('stick-base');
+const stickKnob = document.getElementById('stick-knob');
+const STICK_R = 46, STICK_DEAD = 12, TAP_MS = 250, TAP_MOVE = 10;
+function stickShow(x, y) {
+  for (const el of [stickBase, stickKnob]) { el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.display = 'block'; }
+}
+function stickEnd() {
+  STICK.id = null; STICK.dir = 0;
+  stickBase.style.display = stickKnob.style.display = 'none';
+  stickKnob.classList.remove('on');
+  syncTouch();
+}
+function forwardTap(x, y) {
+  // Kurzer Tipp → als echte Berührung an Phaser durchreichen (inkl. HUD-Schalter)
+  const g = window.__game; if (!g || !g.input) return;
+  const canvas = g.canvas, id = 9000 + Math.floor(Math.random() * 1000);
+  const touch = { identifier: id, target: canvas, clientX: x, clientY: y, pageX: x + window.scrollX, pageY: y + window.scrollY };
+  const ev = type => ({ type, target: canvas, changedTouches: [touch], touches: type === 'touchend' ? [] : [touch], timeStamp: performance.now(), preventDefault() {}, stopPropagation() {} });
+  try { g.input.onTouchStart(ev('touchstart')); g.input.onTouchEnd(ev('touchend')); } catch (e) {}
+}
+stickZone.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (STICK.id !== null) return;
+  const t = e.changedTouches[0];
+  Object.assign(STICK, { id: t.identifier, ox: t.clientX, oy: t.clientY, t0: performance.now(), moved: false, dir: 0 });
+  stickShow(t.clientX, t.clientY);
+}, { passive: false });
+stickZone.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier !== STICK.id) continue;
+    let dx = t.clientX - STICK.ox, dy = t.clientY - STICK.oy;
+    if (Math.hypot(dx, dy) > TAP_MOVE) STICK.moved = true;
+    const d = Math.hypot(dx, dy);
+    if (d > STICK_R) { dx *= STICK_R / d; dy *= STICK_R / d; }
+    stickKnob.style.left = (STICK.ox + dx) + 'px'; stickKnob.style.top = (STICK.oy + dy) + 'px';
+    STICK.dir = dx < -STICK_DEAD ? -1 : dx > STICK_DEAD ? 1 : 0;
+    stickKnob.classList.toggle('on', STICK.dir !== 0);
+    syncTouch();
+  }
+}, { passive: false });
+const stickRelease = e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier !== STICK.id) continue;
+    const tap = e.type === 'touchend' && !STICK.moved && performance.now() - STICK.t0 < TAP_MS;
+    stickEnd();
+    if (tap) forwardTap(t.clientX, t.clientY);
+  }
+};
+stickZone.addEventListener('touchend', stickRelease, { passive: false });
+stickZone.addEventListener('touchcancel', stickRelease, { passive: false });
+window.addEventListener('blur', () => { touchKeys.clear(); stickEnd(); });
 
 // ─── Helfer ──────────────────────────────────────────────────────────────────
 class RNG {
@@ -260,7 +322,7 @@ const hintText = s => s
   .replace(/\{SHOOT\}/g,  TOUCH_UI ? 'Tippe' : 'Linksklick')
   .replace(/\{FREEZE\}/g, TOUCH_UI ? '❄ drücken' : 'Rechtsklick / F')
   .replace(/\{RESET\}/g,  TOUCH_UI ? '↻' : 'R')
-  .replace(/\{MOVE\}/g,   TOUCH_UI ? '◀ ▶' : 'A / D');
+  .replace(/\{MOVE\}/g,   TOUCH_UI ? 'Stick links' : 'A / D');
 
 // ─── Level ───────────────────────────────────────────────────────────────────
 // floor:  begehbare Bodenabschnitte [x0, x1] — Lücken dazwischen sind Abgründe
@@ -688,7 +750,7 @@ class MenuScene extends Phaser.Scene {
     }
 
     const legend = TOUCH_UI
-      ? ['◀ ▶  laufen    ▲  springen (2× = Doppelsprung)',
+      ? ['STICK (links tippen)  laufen    ▲  springen (2× = Doppelsprung)',
          'TIPPEN  State Gun: verflüssigen / gezielt einfrieren    ❄  alles einfrieren    ↻  Neustart']
       : ['A D / ← →  laufen     W / ␣  springen (2× = Doppelsprung)     R  Neustart     M  Ton     ESC  Menü',
          'LINKSKLICK  verflüssigen / Flüssiges gezielt einfrieren      RECHTSKLICK / F  alles einfrieren'];
@@ -1607,7 +1669,7 @@ const gHint = s => s
   .replace(/\{GRAV\}/g,  TOUCH_UI ? 'Tippe' : 'Pfeiltaste / Klick')
   .replace(/\{FLOAT\}/g, TOUCH_UI ? '◎ drücken' : 'F / Rechtsklick')
   .replace(/\{JUMP\}/g,  TOUCH_UI ? '▲' : 'Leertaste')
-  .replace(/\{MOVE\}/g,  TOUCH_UI ? '◀ ▶' : 'A / D');
+  .replace(/\{MOVE\}/g,  TOUCH_UI ? 'Stick links' : 'A / D');
 
 // ─── Gravity-Level ───────────────────────────────────────────────────────────
 // blocks/hazards: [x, y, w, h]  ·  bounds: [x, y, w, h] — außerhalb = Absturz ins Nichts
@@ -1702,7 +1764,7 @@ class GravSelectScene extends Phaser.Scene {
     menuButton(this, GW / 2, 425, '←  ZURÜCK', 'secondary', () => go('Menu'));
 
     const legend = TOUCH_UI
-      ? ['◀ ▶  laufen    ▲  springen / abstoßen    TIPPEN  Schwerkraft in diese Richtung',
+      ? ['STICK (links tippen)  laufen    ▲  springen / abstoßen    TIPPEN  Schwerkraft in diese Richtung',
          '◎  schwerelos    ↻  Neustart']
       : ['A D  laufen    W / ␣  springen / abstoßen    PFEILTASTEN / KLICK  Schwerkraft in diese Richtung',
          'F / RECHTSKLICK  schwerelos    R  Neustart    C  Kamera    B  Schwung    ESC  zurück'];
