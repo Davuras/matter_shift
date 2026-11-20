@@ -1587,7 +1587,7 @@ const GCFG = {
   MAX_FALL: 760,      // maximale Fallgeschwindigkeit
   AIR_ACCEL: 2400,    // Luftsteuerung (wie schnell ◀ ▶ in der Luft greifen)
   SWITCH_CD_MS: 150,  // Mindestabstand zwischen zwei Wechseln
-  FLOAT_ACCEL: 260,   // Steuerung in der Schwerelosigkeit (falls aktiviert)
+  FLOAT_ACCEL: 260,   // Steuerung in der Schwerelosigkeit
   FLOAT_MAX: 200,     // ... Höchstgeschwindigkeit dabei
   PUSH_OFF: 330,      // Abstoßen von einer Fläche in der Schwerelosigkeit
   CAM_ROT_SPEED: 6,   // wie schnell die Kamera mitdreht
@@ -1703,7 +1703,7 @@ class GravSelectScene extends Phaser.Scene {
       ? ['◀ ▶  laufen    ▲  springen / abstoßen    TIPPEN  Schwerkraft in diese Richtung',
          '◎  schwerelos    ↻  Neustart']
       : ['A D  laufen    W / ␣  springen / abstoßen    PFEILTASTEN / KLICK  Schwerkraft in diese Richtung',
-         'F / RECHTSKLICK  schwerelos    R  Neustart    C  Kamera    V  Schweben    B  Schwung    ESC  zurück'];
+         'F / RECHTSKLICK  schwerelos    R  Neustart    C  Kamera    B  Schwung    ESC  zurück'];
     legend.forEach((l, i) => this.add.text(GW / 2, 495 + i * 22, l, { fontFamily: FONT, fontSize: '13px', color: '#8ea3b4' }).setOrigin(0.5));
 
     this.input.keyboard.on('keydown-ESC', () => go('Menu'));
@@ -1738,7 +1738,8 @@ class GravityScene extends Phaser.Scene {
     this._flashDir = null;
     this.facing = 1;
     this._hintsShown = {};
-    this.opts = Object.assign({ camRot: true, floatSteer: true, keepMomentum: true }, Store.get('gravOpts', {}));
+    this.opts = Object.assign({ camRot: true, keepMomentum: true }, Store.get('gravOpts', {}));
+    delete this.opts.floatSteer;   // alte Option (Schweben: nur treiben) entfernt
   }
 
   create() {
@@ -1896,9 +1897,8 @@ class GravityScene extends Phaser.Scene {
       if (this.levelDone) { if (this._canContinue) this._next(); return; }
       if (this.dead || ptr.y < 52 || ptr.y > GH - 40) return;     // HUD-Leisten
       if (!ptr.wasTouch && ptr.rightButtonDown()) { this._setGrav(null); return; }
-      const w = this.cameras.main.getWorldPoint(ptr.x, ptr.y), c = this.player.body.center;
-      const dx = w.x - c.x, dy = w.y - c.y;
-      if (Math.hypot(dx, dy) > 6) this._setGrav(snapDir(dx, dy));
+      const d = this._pointerDir(ptr);
+      if (d) this._setGrav(d);
     });
     const arrow = (sx, sy) => () => { if (!this.dead && !this.levelDone) this._setGrav(this._screenDir(sx, sy)); };
     this.input.keyboard.on('keydown-UP',    arrow(0, -1));
@@ -1907,20 +1907,31 @@ class GravityScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-RIGHT', arrow(1, 0));
     this.input.keyboard.on('keydown-R', () => { if (!this.levelDone) this._restart(false); });
     this.input.keyboard.on('keydown-M', () => SFX.toggle());
-    this.input.keyboard.on('keydown-C', () => this.toggleOpt('camRot'));
-    this.input.keyboard.on('keydown-V', () => this.toggleOpt('floatSteer'));
-    this.input.keyboard.on('keydown-B', () => this.toggleOpt('keepMomentum'));
+    this.input.keyboard.on('keydown-C', e => { if (!e.repeat) this.toggleOpt('camRot'); });
+    this.input.keyboard.on('keydown-B', e => { if (!e.repeat) this.toggleOpt('keepMomentum'); });
     const cont = () => { if (this.levelDone && this._canContinue) this._next(); };
     this.input.keyboard.on('keydown-SPACE', cont);
     this.input.keyboard.on('keydown-ENTER', cont);
     this.input.keyboard.on('keydown-ESC', () => this.leave());
   }
 
-  // Bildschirmrichtung → Weltrichtung (berücksichtigt die Kameradrehung)
+  // Zielwinkel der Kamera (nicht der gerade animierte Zwischenwert)
+  _camTarget() { return this.opts.camRot ? -dirAngle(this.orient) : 0; }
+
+  // Bildschirmrichtung → Weltrichtung. Gerechnet wird mit der Ziel-Drehung der Kamera,
+  // damit Eingaben während der Drehanimation nicht in einer Zwischenstellung landen.
   _screenDir(sx, sy) {
-    const cam = this.cameras.main;
-    const a = cam.getWorldPoint(GW / 2, GH / 2), b = cam.getWorldPoint(GW / 2 + sx * 100, GH / 2 + sy * 100);
-    return snapDir(b.x - a.x, b.y - a.y);
+    const t = this._camTarget(), c = Math.cos(t), s = Math.sin(t);
+    return snapDir(sx * c + sy * s, -sx * s + sy * c);
+  }
+
+  // Zeiger relativ zum Spieler → Weltrichtung (ebenfalls über die Ziel-Drehung)
+  _pointerDir(ptr) {
+    const cam = this.cameras.main, w = cam.getWorldPoint(ptr.x, ptr.y), p = this.player.body.center;
+    const dx = w.x - p.x, dy = w.y - p.y;
+    if (Math.hypot(dx, dy) <= 6) return null;
+    const a = cam.rotation - this._camTarget(), c = Math.cos(a), s = Math.sin(a);
+    return snapDir(dx * c - dy * s, dx * s + dy * c);
   }
 
   toggleOpt(key) {
@@ -2028,10 +2039,10 @@ class GravityScene extends Phaser.Scene {
       let vx = b.velocity.x, vy = b.velocity.y;
       if (pressed && (n.x || n.y)) {
         vx = n.x * GCFG.PUSH_OFF; vy = n.y * GCFG.PUSH_OFF;
-        if (this.opts.floatSteer && side) { vx += r.x * side * 140; vy += r.y * side * 140; }
+        if (side) { vx += r.x * side * 140; vy += r.y * side * 140; }
         this._ring(b.center.x, b.center.y, 0xffffff);
         SFX.play('jump');
-      } else if (this.opts.floatSteer && side) {
+      } else if (side) {
         const cur = vx * r.x + vy * r.y;
         if (Math.sign(cur) !== side || Math.abs(cur) < GCFG.FLOAT_MAX) {
           vx += r.x * side * GCFG.FLOAT_ACCEL * dt; vy += r.y * side * GCFG.FLOAT_ACCEL * dt;
@@ -2100,7 +2111,7 @@ class GravityScene extends Phaser.Scene {
     const b = this.player.body, cam = this.cameras.main;
     const target = dirAngle(this.orient);
     this.visAngle += wrapA(target - this.visAngle) * Math.min(1, dt * 12);
-    const camT = this.opts.camRot ? -target : 0;
+    const camT = this._camTarget();
     cam.setRotation(cam.rotation + wrapA(camT - cam.rotation) * Math.min(1, dt * GCFG.CAM_ROT_SPEED));
 
     const a = this.visAngle, ca = Math.cos(a), sa = Math.sin(a);
@@ -2165,9 +2176,8 @@ class GravityScene extends Phaser.Scene {
     if (TOUCH_UI) return;
     const p = this.input.activePointer;
     if (p.y < 52 || p.y > GH - 40) return;
-    const w = this.cameras.main.getWorldPoint(p.x, p.y);
-    const d = snapDir(w.x - c.x, w.y - c.y);
-    if (d !== this.grav) this._drawArrow(g, c.x, c.y, d, 0x7fdcff, 0.35);
+    const d = this._pointerDir(p);
+    if (d && d !== this.grav) this._drawArrow(g, c.x, c.y, d, 0x7fdcff, 0.35);
   }
 
   _hint(key) {
@@ -2270,9 +2280,8 @@ class GravHUDScene extends Phaser.Scene {
     const bar = this.add.graphics().setDepth(50);
     bar.fillStyle(0x0b1016, 0.8); rr(bar, 60, GH - 34, GW - 120, 28, 6);
     this.toggles = [
-      { key: 'camRot',       k: 'C', x: GW / 2 - 360, label: v => `KAMERA: ${v ? 'DREHT MIT' : 'FEST'}` },
-      { key: 'floatSteer',   k: 'V', x: GW / 2,       label: v => `SCHWEBEN: ${v ? 'STEUERBAR' : 'NUR TREIBEN'}` },
-      { key: 'keepMomentum', k: 'B', x: GW / 2 + 360, label: v => `SCHWUNG: ${v ? 'BEHALTEN' : 'STOPPT'}` },
+      { key: 'camRot',       k: 'C', x: GW / 2 - 220, label: v => `KAMERA: ${v ? 'DREHT MIT' : 'FEST'}` },
+      { key: 'keepMomentum', k: 'B', x: GW / 2 + 220, label: v => `SCHWUNG: ${v ? 'BEHALTEN' : 'STOPPT'}` },
     ].map(t => {
       t.txt = T(t.x, GH - 20, '', '12px', '#9fb4c4', 0.5).setInteractive({ useHandCursor: true });
       t.txt.on('pointerdown', () => gs.toggleOpt(t.key));
@@ -2331,11 +2340,13 @@ class GravHUDScene extends Phaser.Scene {
     g.fillStyle(0x0a2a3a, 1); g.fillCircle(cx, cy, 10);
     g.lineStyle(2, COL.COLD, 0.9); g.strokeCircle(cx, cy, 10);
     if (gs.grav) {
-      const v = GDIR[gs.grav];
+      // Richtung so, wie sie auf dem Bildschirm erscheint (Kamera kann gedreht sein)
+      const w = GDIR[gs.grav], ra = gs.cameras.main.rotation, rc = Math.cos(ra), rs = Math.sin(ra);
+      const v = { x: w.x * rc - w.y * rs, y: w.x * rs + w.y * rc };
       g.lineStyle(2, 0xffffff, 1); g.lineBetween(cx - v.x * 5, cy - v.y * 5, cx + v.x * 5, cy + v.y * 5);
       g.fillStyle(0xffffff, 1);
       g.fillTriangle(cx + v.x * 8, cy + v.y * 8, cx + v.x * 3 - v.y * 4, cy + v.y * 3 + v.x * 4, cx + v.x * 3 + v.y * 4, cy + v.y * 3 - v.x * 4);
-      this.tGrav.setText(`SCHWERKRAFT ${GARROW[gs.grav]}`).setColor('#7fe3ff');
+      this.tGrav.setText(`SCHWERKRAFT ${GARROW[snapDir(v.x, v.y)]}`).setColor('#7fe3ff');
     } else {
       g.fillStyle(0xffffff, 0.9); g.fillCircle(cx, cy, 3);
       this.tGrav.setText('◎ SCHWERELOS').setColor('#ffffff');
